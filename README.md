@@ -8,22 +8,27 @@ With the rise of AI-assisted "vibe coding", malicious actors embed data-stealing
 
 ## What It Checks
 
-| Check | Tool | Detects |
-|---|---|---|
-| Secrets | gitleaks | Tokens, API keys, credentials in code |
-| Security audit | semgrep | Exfiltration patterns, malicious code |
-| Secrets in code | detect-secrets | Hardcoded secrets with high precision |
-| Malware patterns | yara | Credential harvesting, webhooks, RCE, obfuscation |
-| Data exfiltration | grep | Outbound HTTP calls to external endpoints |
-| Sensitive file/env access | grep | `~/.ssh`, `~/.aws`, `document.cookie`, env vars |
-| Remote code execution | grep | `curl \| bash`, `eval(fetch(...))` |
+| # | Check | Tool | Detects |
+|---|---|---|---|
+| 1 | Secrets | gitleaks | Tokens, API keys, credentials in code |
+| 2 | Security audit | semgrep | Exfiltration patterns, malicious code |
+| 3 | Secrets in code | detect-secrets | Hardcoded secrets with high precision |
+| 4 | Malware patterns | yara | Credential harvesting, webhooks, RCE, obfuscation |
+| 5 | Data exfiltration | grep | Outbound HTTP calls to external endpoints |
+| 6 | Sensitive file/env access | grep | `~/.ssh`, `~/.aws`, `document.cookie`, env vars |
+| 7 | Remote code execution | grep | `curl \| bash`, `eval(fetch(...))` |
+| 8 | Verified secrets | trufflehog | High-entropy secrets with active verification |
+| 9 | Suspicious exfil domains | grep | webhook.site, Telegram, ngrok, Pastebin, etc. |
+| 10 | Network syscalls in binaries | strings | `.so`, `.dylib`, `.exe` with network calls |
 
 ## Requirements
 
 ```bash
-brew install gitleaks semgrep yara
+brew install gitleaks semgrep yara trufflehog
 pipx install detect-secrets
 ```
+
+> Dependencies are checked and installed automatically on each run.
 
 ## Usage
 
@@ -39,7 +44,7 @@ After scanning, the cloned repo is automatically deleted. You will be prompted t
 
 ## Output
 
-- Terminal: ASCII table with color-coded results (GREEN / RED / YELLOW)
+- Terminal: ASCII table with color-coded results (`GREEN` / `RED` / `YELLOW`)
 - Report: `out/<repo-name>-security-report.md` (optional)
 
 ## Project Structure
@@ -51,3 +56,7 @@ repoMalScanner/
 ├── tmp/                # Temporary clone directory (auto-cleaned)
 └── out/                # Saved scan reports
 ```
+
+## License
+
+MIT
