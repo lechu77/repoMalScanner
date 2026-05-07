@@ -12,7 +12,7 @@ mkdir -p "$TMPDIR_SCAN" "$OUT_DIR"
 trap 'rm -rf "$TMPDIR_SCAN"' EXIT
 
 # ── Dependencies ───────────────────────────────────────────────────────────────
-BREW_TOOLS="gitleaks semgrep yara"
+BREW_TOOLS="gitleaks semgrep yara trufflehog"
 PIPX_TOOLS="detect-secrets"
 
 check_deps() {
@@ -219,6 +219,62 @@ run_grep "SENS" '(~/\.ssh|~/\.aws|~/\.gnupg|/etc/passwd|/etc/shadow|process\.env
 echo -e "  ${CYAN}Checking remote execution patterns...${RESET}"
 run_grep "RCE" '(curl.+\|\s*(ba)?sh|wget.+\|\s*(ba)?sh|eval\s*\(.*fetch|eval\s*\(.*http|exec\s*\(.*http)'
 
+# ── 7. Trufflehog — verified secrets with entropy ────────────────────────────
+echo -e "  ${CYAN}Running trufflehog...${RESET}"
+if command -v trufflehog &>/dev/null; then
+  TH_OUT=$(trufflehog filesystem "$CLONE_DIR" --json --no-update 2>/dev/null | head -50 || true)
+  TH_COUNT=$(echo "$TH_OUT" | grep -c '"SourceMetadata"' 2>/dev/null || true)
+  if [[ "$TH_COUNT" -gt 0 ]]; then
+    RESULT_TRUFFLEHOG="FOUND ($TH_COUNT secrets)"
+    DETAIL_TRUFFLEHOG=$(echo "$TH_OUT" | python3 -c "
+import sys,json
+seen=set()
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try:
+        d=json.loads(line)
+        f=d.get('SourceMetadata',{}).get('Data',{}).get('Filesystem',{}).get('file','?')
+        det=d.get('DetectorName','?')
+        entry='%s (%s)' % (f.replace('$CLONE_DIR/',''),det)
+        if entry not in seen:
+            seen.add(entry)
+            print(entry)
+        if len(seen)>=3: break
+    except: pass
+" 2>/dev/null || true)
+  else
+    RESULT_TRUFFLEHOG="CLEAN"
+    DETAIL_TRUFFLEHOG=""
+  fi
+else
+  RESULT_TRUFFLEHOG="SKIPPED (not found)"
+  DETAIL_TRUFFLEHOG=""
+fi
+
+# ── 8. Suspicious exfiltration domains ───────────────────────────────────────
+echo -e "  ${CYAN}Checking suspicious domains...${RESET}"
+run_grep "DOMAINS" '(webhook\.site|discord\.com/api/webhooks|t\.me/|api\.telegram\.org|pastebin\.com|requestbin\.|ngrok\.io|ngrok\.app|burpcollaborator|pipedream\.net|hookbin\.com|canarytokens\.com|interactsh\.com)'
+
+# ── 9. Network syscalls in binaries ──────────────────────────────────────────
+echo -e "  ${CYAN}Checking binaries for network syscalls...${RESET}"
+BIN_HITS=""
+BIN_COUNT=0
+while IFS= read -r -d '' bin; do
+  if strings "$bin" 2>/dev/null | grep -qE '(connect|socket|send|recv|getaddrinfo|curl_easy_perform|WSAConnect)'; then
+    BIN_HITS="$BIN_HITS\n${bin#$CLONE_DIR/}"
+    BIN_COUNT=$((BIN_COUNT + 1))
+    [[ $BIN_COUNT -ge 3 ]] && break
+  fi
+done < <(find "$CLONE_DIR" -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.exe" -o -name "*.bin" \) -print0 2>/dev/null)
+if [[ $BIN_COUNT -gt 0 ]]; then
+  RESULT_BINSYSC="FOUND ($BIN_COUNT binaries)"
+  DETAIL_BINSYSC=$(printf '%b' "$BIN_HITS" | sed '/^$/d' | head -3)
+else
+  RESULT_BINSYSC="CLEAN"
+  DETAIL_BINSYSC=""
+fi
+
 # ── Report ────────────────────────────────────────────────────────────────────
 label_GITLEAKS="Secrets (gitleaks)"
 label_SEMGREP="Security audit (semgrep)"
@@ -227,8 +283,11 @@ label_YARA="Malware patterns (yara)"
 label_EXFIL="Data exfiltration"
 label_SENS="Sensitive file/env access"
 label_RCE="Remote code execution"
+label_TRUFFLEHOG="Verified secrets (trufflehog)"
+label_DOMAINS="Suspicious exfil domains"
+label_BINSYSC="Network syscalls in binaries"
 
-CHECKS="GITLEAKS SEMGREP DSECRETS YARA EXFIL SENS RCE"
+CHECKS="GITLEAKS SEMGREP DSECRETS YARA EXFIL SENS RCE TRUFFLEHOG DOMAINS BINSYSC"
 
 echo ""
 echo -e "${BOLD}${CYAN}┌─────────────────────────────────────────────────────────────────┐${RESET}"
