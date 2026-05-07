@@ -290,9 +290,11 @@ label_BINSYSC="Network syscalls in binaries"
 CHECKS="GITLEAKS SEMGREP DSECRETS YARA EXFIL SENS RCE TRUFFLEHOG DOMAINS BINSYSC"
 
 echo ""
-echo -e "${BOLD}${CYAN}┌─────────────────────────────────────────────────────────────────┐${RESET}"
-printf "${BOLD}${CYAN}│${RESET}  %-32s  %-26s ${BOLD}${CYAN}│${RESET}\n" "CHECK" "RESULT"
-echo -e "${BOLD}${CYAN}├─────────────────────────────────────────────────────────────────┤${RESET}"
+WIDTH=70
+BORDER=$(printf '─%.0s' $(seq 1 $WIDTH))
+echo -e "${BOLD}${CYAN}┌${BORDER}┐${RESET}"
+printf "${BOLD}${CYAN}│${RESET}  %-36s  %-28s${BOLD}${CYAN}│${RESET}\n" "CHECK" "RESULT"
+echo -e "${BOLD}${CYAN}├${BORDER}┤${RESET}"
 
 FOUND_ANY=false
 for id in $CHECKS; do
@@ -300,25 +302,35 @@ for id in $CHECKS; do
   eval "det=\$DETAIL_${id}"
   eval "lbl=\$label_${id}"
 
-  printf "${BOLD}${CYAN}│${RESET}  %-32s  " "$lbl"
+  # Color for result
   if [[ "$res" == "CLEAN" ]]; then
-    echo -en "${GREEN}${res}${RESET}"
+    res_colored="${GREEN}${res}${RESET}"
   elif [[ "$res" == SKIPPED* ]]; then
-    echo -en "${YELLOW}${res}${RESET}"
+    res_colored="${YELLOW}${res}${RESET}"
   else
-    echo -en "${RED}${res}${RESET}"
+    res_colored="${RED}${res}${RESET}"
     FOUND_ANY=true
   fi
-  echo -e "  ${BOLD}${CYAN}│${RESET}"
+
+  # Pad label to 36, print result (color doesn't affect layout since it's at end)
+  printf "${BOLD}${CYAN}│${RESET}  %-36s  %b" "$lbl" "$res_colored"
+  # Fill remaining space to close border
+  res_plain=$(echo "$res" | sed 's/\x1b\[[0-9;]*m//g')
+  pad=$((WIDTH - 36 - 2 - ${#res_plain} - 2))
+  [[ $pad -lt 0 ]] && pad=0
+  printf '%*s' "$pad" ""
+  echo -e "${BOLD}${CYAN}│${RESET}"
 
   if [[ -n "$det" ]]; then
     while IFS= read -r line; do
-      printf "${BOLD}${CYAN}│${RESET}    ${YELLOW}↳ %-59s${BOLD}${CYAN}│${RESET}\n" "$line"
+      # Truncate to fit
+      line="${line:0:$((WIDTH - 6))}"
+      printf "${BOLD}${CYAN}│${RESET}    ${YELLOW}↳${RESET} %-$((WIDTH - 6))s${BOLD}${CYAN}│${RESET}\n" "$line"
     done <<< "$det"
   fi
 done
 
-echo -e "${BOLD}${CYAN}└─────────────────────────────────────────────────────────────────┘${RESET}"
+echo -e "${BOLD}${CYAN}└${BORDER}┘${RESET}"
 echo -e "  Scanned: ${BOLD}$REPO_URL${RESET}"
 echo ""
 
