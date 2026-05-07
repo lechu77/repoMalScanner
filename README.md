@@ -70,6 +70,60 @@ Repos designed to trigger security scanners — good for validating the tool:
 ./repo-scanner.sh --repo https://github.com/juice-shop/juice-shop
 ```
 
+### Sample output
+
+```
+./repo-scanner.sh --repo https://github.com/gitleaks/gitleaks
+
+╔══════════════════════════════════════════╗
+║        REPO SECURITY SCANNER             ║
+╚══════════════════════════════════════════╝
+
+  Repo URL: https://github.com/gitleaks/gitleaks
+
+  Cloning...
+  Running gitleaks...
+  Running semgrep...
+  Running detect-secrets...
+  Running YARA...
+  Checking exfiltration patterns...
+  Checking sensitive access patterns...
+  Checking remote execution patterns...
+  Running trufflehog...
+  Checking suspicious domains...
+  Checking binaries for network syscalls...
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  CHECK                                 RESULT                        │
+├──────────────────────────────────────────────────────────────────────┤
+│  Secrets (gitleaks)                    CLEAN                         │
+│  Security audit (semgrep)              FOUND (34 matches)            │
+│    ↳ cmd/diagnostics.go (use-tls)                                    │
+│    ↳ cmd/generate/config/rules/aws.go (detected-aws-access-key-id)   │
+│  Secrets in code (detect-secrets)      CLEAN                         │
+│  Malware patterns (yara)               FOUND (4 matches)             │
+│    ↳ RuntimeObfuscation detect/codec/hex.go                          │
+│    ↳ DataExfiltration cmd/generate/config/rules/telegram.go          │
+│    ↳ DataExfiltration cmd/generate/config/rules/flyio.go             │
+│  Data exfiltration                     FOUND (1 files)               │
+│    ↳ cmd/generate/config/rules/jwt.go                                │
+│  Sensitive file/env access             FOUND (1 files)               │
+│    ↳ cmd/generate/config/rules/huggingface.go                        │
+│  Remote code execution                 CLEAN                         │
+│  Verified secrets (trufflehog)         FOUND (50 secrets)            │
+│    ↳ cmd/generate/config/rules/jwt.go (URI)                          │
+│    ↳ cmd/generate/config/rules/azure.go (Azure)                      │
+│    ↳ cmd/generate/config/rules/jwt.go (JWT)                          │
+│  Suspicious exfil domains              FOUND (2 files)               │
+│    ↳ cmd/generate/config/rules/telegram.go                           │
+│    ↳ cmd/generate/config/rules/flyio.go                              │
+│  Network syscalls in binaries          CLEAN                         │
+└──────────────────────────────────────────────────────────────────────┘
+  Scanned: https://github.com/gitleaks/gitleaks
+
+  Save report as Markdown? [y/N]:
+```
+
 ## License
 
 MIT
