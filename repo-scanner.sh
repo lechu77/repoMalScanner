@@ -11,7 +11,43 @@ OUT_DIR="$SCRIPT_DIR/out"
 mkdir -p "$TMPDIR_SCAN" "$OUT_DIR"
 trap 'rm -rf "$TMPDIR_SCAN"' EXIT
 
+# ── Dependencies ───────────────────────────────────────────────────────────────
+BREW_TOOLS="gitleaks semgrep yara"
+PIPX_TOOLS="detect-secrets"
+
+check_deps() {
+  local missing_brew="" missing_pipx="" outdated_brew=""
+
+  for t in $BREW_TOOLS; do
+    command -v "$t" &>/dev/null || missing_brew="$missing_brew $t"
+  done
+  for t in $PIPX_TOOLS; do
+    command -v "$t" &>/dev/null || missing_pipx="$missing_pipx $t"
+  done
+  for t in $BREW_TOOLS; do
+    if command -v "$t" &>/dev/null; then
+      brew outdated --quiet 2>/dev/null | grep -q "^$t$" && outdated_brew="$outdated_brew $t"
+    fi
+  done
+
+  if [[ -n "$missing_brew" || -n "$missing_pipx" ]]; then
+    echo -e "${YELLOW}Missing dependencies:${RESET}${missing_brew}${missing_pipx}"
+    read -rp "  Install now? [y/N]: " CONFIRM
+    if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+      for t in $missing_brew;  do brew install "$t";  done
+      for t in $missing_pipx; do pipx install "$t"; done
+    fi
+  fi
+
+  if [[ -n "$outdated_brew" ]]; then
+    echo -e "${YELLOW}Updates available:${RESET}${outdated_brew}"
+    read -rp "  Update now? [y/N]: " CONFIRM
+    [[ "$CONFIRM" =~ ^[Yy]$ ]] && brew upgrade $outdated_brew
+  fi
+}
+
 # ── Input ──────────────────────────────────────────────────────────────────────
+check_deps
 echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════╗${RESET}"
 echo -e "${BOLD}${CYAN}║        REPO SECURITY SCANNER             ║${RESET}"
 echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════╝${RESET}"
@@ -154,7 +190,10 @@ fi
 echo -e "  ${CYAN}Running YARA...${RESET}"
 YARA_RULES="$SCRIPT_DIR/yara-rules.yar"
 if command -v yara &>/dev/null && [[ -f "$YARA_RULES" ]]; then
-  YARA_OUT=$(yara -r "$YARA_RULES" "$CLONE_DIR" 2>/dev/null | head -20 || true)
+  YARA_OUT=$(yara -r "$YARA_RULES" "$CLONE_DIR" 2>/dev/null \
+    | grep -v '\.gitignore$' | grep -v '\.gitattributes$' \
+    | grep -v 'README' | grep -v '\.md$' \
+    | head -20 || true)
   YARA_COUNT=$(echo "$YARA_OUT" | grep -c . || true)
   if [[ "$YARA_COUNT" -gt 0 ]]; then
     RESULT_YARA="FOUND ($YARA_COUNT matches)"
