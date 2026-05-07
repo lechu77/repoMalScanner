@@ -57,6 +57,19 @@ repoMalScanner/
 └── out/                # Saved scan reports
 ```
 
+## Test Repos
+
+Repos designed to trigger security scanners — good for validating the tool:
+
+```bash
+./repo-scanner.sh --repo https://github.com/trufflesecurity/test_keys
+./repo-scanner.sh --repo https://github.com/gitleaks/gitleaks
+./repo-scanner.sh --repo https://github.com/OWASP/wrongsecrets
+
+# Large repo — clone will take a while
+./repo-scanner.sh --repo https://github.com/juice-shop/juice-shop
+```
+
 ## License
 
 MIT
