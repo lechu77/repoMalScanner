@@ -50,5 +50,5 @@ Key decisions and context for this project.
 
 ## Fixes (2026-05-12)
 
-- **Table right border padding** — corrected padding formula (`-4` instead of `-2`) so the right `│` aligns correctly for all result lengths
+- **Table right border padding** — corrected padding formula (`-2`) and header format (`%-30s`) so the right `│` aligns correctly for all result lengths
 - **`os.environ` false positive** — SENS check now filters assignment lines; only reads are flagged (e.g. `os.environ["HF_TOKEN"] = x` is ignored, `token = os.environ["HF_TOKEN"]` is flagged)

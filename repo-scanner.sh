@@ -486,7 +486,7 @@ echo ""
 WIDTH=70
 BORDER=$(printf '─%.0s' $(seq 1 $WIDTH))
 echo -e "${BOLD}${CYAN}┌${BORDER}┐${RESET}"
-printf "${BOLD}${CYAN}│${RESET}  %-36s  %-28s${BOLD}${CYAN}│${RESET}\n" "CHECK" "RESULT"
+printf "${BOLD}${CYAN}│${RESET}  %-36s  %-30s${BOLD}${CYAN}│${RESET}\n" "CHECK" "RESULT"
 echo -e "${BOLD}${CYAN}├${BORDER}┤${RESET}"
 
 FOUND_ANY=false
@@ -516,7 +516,7 @@ for id in $CHECKS; do
 
   printf "${BOLD}${CYAN}│${RESET}  %-36s  %b" "$lbl" "$res_colored"
   res_plain=$(echo "$res" | sed 's/\x1b\[[0-9;]*m//g')
-  pad=$((WIDTH - 36 - 2 - ${#res_plain} - 4))
+  pad=$((WIDTH - 36 - 2 - ${#res_plain} - 2))
   [[ $pad -lt 0 ]] && pad=0
   printf '%*s' "$pad" ""
   echo -e "${BOLD}${CYAN}│${RESET}"
@@ -543,7 +543,7 @@ RISK_LABEL="Risk score"
 RISK_VAL="${RISK_COLOR}${RISK_PCT}/100${RESET}"
 printf "${BOLD}${CYAN}│${RESET}  %-36s  %b" "$RISK_LABEL" "$RISK_VAL"
 risk_plain="${RISK_PCT}/100"
-pad=$((WIDTH - 36 - 2 - ${#risk_plain} - 4))
+pad=$((WIDTH - 36 - 2 - ${#risk_plain} - 2))
 [[ $pad -lt 0 ]] && pad=0
 printf '%*s' "$pad" ""
 echo -e "${BOLD}${CYAN}│${RESET}"
