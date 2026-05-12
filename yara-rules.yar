@@ -24,11 +24,10 @@ rule SensitiveFileAccess {
     $a = ".ssh/id_rsa" nocase
     $b = ".ssh/id_ed25519" nocase
     $c = ".aws/credentials" nocase
-    $d = ".aws/config" nocase
-    $e = "/etc/passwd"
-    $f = "/etc/shadow"
-    $g = ".gnupg" nocase
-    $h = "~/.config" nocase
+    $d = "/etc/passwd"
+    $e = "/etc/shadow"
+    $f = ".gnupg/secring" nocase
+    $g = ".gnupg/private-keys" nocase
   condition:
     any of them
 }
@@ -65,23 +64,36 @@ rule RemoteCodeExecution {
 
 rule RuntimeObfuscation {
   meta:
-    description = "Decodes and executes obfuscated payloads at runtime"
+    description = "Decodes and executes obfuscated payloads at runtime — requires 2+ indicators"
   strings:
     $a = "fromCharCode" nocase
     $b = /Buffer\.from\([^)]+,\s*['"]base64['"]\)/ nocase
     $c = "base64.b64decode" nocase
     $d = /\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}/
+    $exec1 = "eval(" nocase
+    $exec2 = "exec(" nocase
+    $exec3 = "Function(" nocase
+    $exec4 = "subprocess" nocase
   condition:
-    any of them
+    // Must have at least one obfuscation indicator AND one execution indicator
+    (any of ($a,$b,$c,$d)) and (any of ($exec1,$exec2,$exec3,$exec4))
 }
 
 rule SupplyChainHook {
   meta:
-    description = "Suspicious npm lifecycle scripts (postinstall/preinstall)"
+    description = "Suspicious npm lifecycle scripts that also contain remote execution"
   strings:
-    $a = "\"postinstall\"" nocase
-    $b = "\"preinstall\"" nocase
-    $c = "\"prepare\"" nocase
+    $hook1 = "\"postinstall\"" nocase
+    $hook2 = "\"preinstall\"" nocase
+    $hook3 = "\"prepare\"" nocase
+    $exec1 = /curl.{0,100}https?:\/\// nocase
+    $exec2 = /wget.{0,100}https?:\/\// nocase
+    $exec3 = "node -e" nocase
+    $exec4 = "python -c" nocase
+    $exec5 = "bash -c" nocase
+    $exec6 = "sh -c" nocase
+    $exec7 = "exec(" nocase
+    $exec8 = "eval(" nocase
   condition:
-    any of ($a, $b, $c)
+    any of ($hook1,$hook2,$hook3) and any of ($exec1,$exec2,$exec3,$exec4,$exec5,$exec6,$exec7,$exec8)
 }

@@ -32,14 +32,18 @@ check_deps() {
 
   if [[ -n "$missing_brew" || -n "$missing_pipx" ]]; then
     echo -e "${YELLOW}Missing dependencies:${RESET}${missing_brew}${missing_pipx}"
-    read -rp "  Install now? [y/N]: " CONFIRM
-    if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
-      for t in $missing_brew;  do brew install "$t";  done
-      for t in $missing_pipx; do pipx install "$t"; done
+    if [[ "$NO_INTERACTIVE" == true ]]; then
+      echo -e "${YELLOW}  (skipping install in --no-interactive mode)${RESET}"
+    else
+      read -rp "  Install now? [y/N]: " CONFIRM
+      if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+        for t in $missing_brew;  do brew install "$t";  done
+        for t in $missing_pipx; do pipx install "$t"; done
+      fi
     fi
   fi
 
-  if [[ -n "$outdated_brew" ]]; then
+  if [[ -n "$outdated_brew" ]] && [[ "$NO_INTERACTIVE" != true ]]; then
     echo -e "${YELLOW}Updates available:${RESET}${outdated_brew}"
     read -rp "  Update now? [y/N]: " CONFIRM
     [[ "$CONFIRM" =~ ^[Yy]$ ]] && brew upgrade $outdated_brew
@@ -47,19 +51,28 @@ check_deps() {
 }
 
 # ── Input ──────────────────────────────────────────────────────────────────────
+REPO_URL=""
+NO_INTERACTIVE=false
+FULL_HISTORY=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo)           REPO_URL="$2"; shift 2 ;;
+    --no-interactive) NO_INTERACTIVE=true; shift ;;
+    --full-history)   FULL_HISTORY=true; shift ;;
+    *) shift ;;
+  esac
+done
+
 check_deps
 echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════╗${RESET}"
 echo -e "${BOLD}${CYAN}║        REPO SECURITY SCANNER             ║${RESET}"
 echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════╝${RESET}"
 echo ""
-REPO_URL=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --repo) REPO_URL="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
+
 if [[ -z "$REPO_URL" ]]; then
+  if [[ "$NO_INTERACTIVE" == true ]]; then
+    echo "No URL provided." && exit 1
+  fi
   read -rp "  Repo URL: " REPO_URL
 else
   echo -e "  Repo URL: ${BOLD}$REPO_URL${RESET}"
@@ -70,20 +83,24 @@ REPO_NAME=$(basename "$REPO_URL" .git)
 CLONE_DIR="$TMPDIR_SCAN/$REPO_NAME"
 
 echo -e "\n  ${CYAN}Cloning...${RESET}"
-git clone --depth=1 --quiet "$REPO_URL" "$CLONE_DIR" 2>&1 || { echo -e "${RED}Clone failed.${RESET}"; exit 1; }
+if [[ "$FULL_HISTORY" == true ]]; then
+  git clone --quiet "$REPO_URL" "$CLONE_DIR" 2>&1 || { echo -e "${RED}Clone failed.${RESET}"; exit 1; }
+else
+  git clone --depth=1 --quiet "$REPO_URL" "$CLONE_DIR" 2>&1 || { echo -e "${RED}Clone failed.${RESET}"; exit 1; }
+fi
 
 # ── Check engine ──────────────────────────────────────────────────────────────
 GREP_INCLUDES=(-rIl
   --include="*.js" --include="*.ts" --include="*.py" --include="*.sh"
   --include="*.env" --include="*.json" --include="*.yml" --include="*.yaml"
-  --include="*.rb" --include="*.php" --include="*.go" --include="*.java")
+  --include="*.rb" --include="*.php" --include="*.go" --include="*.java"
+  --exclude-dir="test" --exclude-dir="tests" --exclude-dir="__tests__"
+  --exclude-dir="fixtures" --exclude-dir="testdata" --exclude-dir="spec")
 
 run_grep() {
-  local varname="$1" pattern="$2" exclude="${3:-}"
-  local args=("${GREP_INCLUDES[@]}")
-  [[ -n "$exclude" ]] && args+=(--exclude="$exclude")
+  local varname="$1" pattern="$2"
   local hits count
-  hits=$(grep -E "${args[@]}" "$pattern" "$CLONE_DIR" 2>/dev/null | head -20 || true)
+  hits=$(grep -E "${GREP_INCLUDES[@]}" "$pattern" "$CLONE_DIR" 2>/dev/null | head -20 || true)
   count=$(printf '%s' "$hits" | grep -c . 2>/dev/null || true)
   if [[ "$count" -gt 0 ]]; then
     eval "RESULT_${varname}=\"FOUND ($count files)\""
@@ -98,8 +115,13 @@ run_grep() {
 echo -e "  ${CYAN}Running gitleaks...${RESET}"
 GITLEAKS_OUT="$TMPDIR_SCAN/gitleaks.json"
 if command -v gitleaks &>/dev/null; then
-  gitleaks detect --source "$CLONE_DIR" --report-format json \
-    --report-path "$GITLEAKS_OUT" --no-git --exit-code 0 -q 2>/dev/null || true
+  if [[ "$FULL_HISTORY" == true ]]; then
+    gitleaks detect --source "$CLONE_DIR" --report-format json \
+      --report-path "$GITLEAKS_OUT" --exit-code 0 -q 2>/dev/null || true
+  else
+    gitleaks detect --source "$CLONE_DIR" --report-format json \
+      --report-path "$GITLEAKS_OUT" --no-git --exit-code 0 -q 2>/dev/null || true
+  fi
   GL_COUNT=$(python3 -c "import json,sys; d=json.load(open('$GITLEAKS_OUT')); print(len(d))" 2>/dev/null || echo 0)
   if [[ "$GL_COUNT" -gt 0 ]]; then
     RESULT_GITLEAKS="FOUND ($GL_COUNT secrets)"
@@ -128,7 +150,7 @@ fi
 echo -e "  ${CYAN}Running semgrep...${RESET}"
 SEMGREP_OUT="$TMPDIR_SCAN/semgrep.json"
 if command -v semgrep &>/dev/null; then
-  semgrep --config "p/security-audit" --config "p/secrets" \
+  semgrep --config "p/secrets" --config "p/supply-chain" \
     --json --output "$SEMGREP_OUT" "$CLONE_DIR" \
     --quiet --no-error 2>/dev/null || true
   SG_COUNT=$(python3 -c "import json,sys; d=json.load(open('$SEMGREP_OUT')); print(len(d.get('results',[])))" 2>/dev/null || echo 0)
@@ -193,6 +215,7 @@ if command -v yara &>/dev/null && [[ -f "$YARA_RULES" ]]; then
   YARA_OUT=$(yara -r "$YARA_RULES" "$CLONE_DIR" 2>/dev/null \
     | grep -v '\.gitignore$' | grep -v '\.gitattributes$' \
     | grep -v 'README' | grep -v '\.md$' \
+    | grep -v '\.txt$' | grep -v '\.rst$' | grep -v '\.adoc$' \
     | head -20 || true)
   YARA_COUNT=$(echo "$YARA_OUT" | grep -c . || true)
   if [[ "$YARA_COUNT" -gt 0 ]]; then
@@ -213,7 +236,28 @@ run_grep "EXFIL" '(fetch|axios|requests\.(get|post)|http\.(get|post)|curl)\s*\(?
 
 # ── 5. Grep — sensitive file/env access ──────────────────────────────────────
 echo -e "  ${CYAN}Checking sensitive access patterns...${RESET}"
-run_grep "SENS" '(~/\.ssh|~/\.aws|~/\.gnupg|/etc/passwd|/etc/shadow|process\.env\.|os\.environ|getenv\s*\(|localStorage\.(getItem|password|token)|document\.cookie|chrome\.cookies|\.netrc|\.git-credentials)'
+# Use -l to find files, but first verify they contain reads (not just writes)
+SENS_PATTERN='(~/\.ssh|~/\.aws|~/\.gnupg|/etc/passwd|/etc/shadow|process\.env\.|os\.environ|getenv\s*\(|localStorage\.(getItem|password|token)|document\.cookie|chrome\.cookies|\.netrc|\.git-credentials)'
+SENS_EXCLUDE='^[[:space:]]*(os\.environ\[|process\.env\.[A-Z_]+ *=)'
+SENS_HITS=""
+SENS_COUNT=0
+while IFS= read -r file; do
+  # File matches the broad pattern — check if it has any non-assignment match
+  if grep -qEv "$SENS_EXCLUDE" "$file" 2>/dev/null && grep -qE "$SENS_PATTERN" "$file" 2>/dev/null; then
+    # Confirm at least one line matches pattern AND is not an assignment
+    if grep -E "$SENS_PATTERN" "$file" 2>/dev/null | grep -qEv "$SENS_EXCLUDE"; then
+      SENS_HITS="$SENS_HITS${file#$CLONE_DIR/}\n"
+      SENS_COUNT=$((SENS_COUNT + 1))
+    fi
+  fi
+done < <(grep -rIEl "${GREP_INCLUDES[@]:1}" "$SENS_PATTERN" "$CLONE_DIR" 2>/dev/null | head -20)
+if [[ "$SENS_COUNT" -gt 0 ]]; then
+  RESULT_SENS="FOUND ($SENS_COUNT files)"
+  DETAIL_SENS=$(printf '%b' "$SENS_HITS" | sed '/^$/d' | head -3)
+else
+  RESULT_SENS="CLEAN"
+  DETAIL_SENS=""
+fi
 
 # ── 6. Grep — remote code execution ──────────────────────────────────────────
 echo -e "  ${CYAN}Checking remote execution patterns...${RESET}"
@@ -275,6 +319,139 @@ else
   DETAIL_BINSYSC=""
 fi
 
+# ── 10. Committed .env files ──────────────────────────────────────────────────
+echo -e "  ${CYAN}Checking for committed .env files...${RESET}"
+ENV_HITS=$(find "$CLONE_DIR" -type f \( -name ".env" -o -name ".env.local" -o -name ".env.production" -o -name ".env.staging" -o -name ".env.development" \) 2>/dev/null | head -10 || true)
+ENV_COUNT=$(echo "$ENV_HITS" | grep -c . 2>/dev/null || true)
+if [[ "$ENV_COUNT" -gt 0 ]]; then
+  RESULT_ENVFILES="FOUND ($ENV_COUNT files)"
+  DETAIL_ENVFILES=$(echo "$ENV_HITS" | head -3 | sed "s|$CLONE_DIR/||")
+else
+  RESULT_ENVFILES="CLEAN"
+  DETAIL_ENVFILES=""
+fi
+
+# ── 11. Lifecycle script analysis ────────────────────────────────────────────
+echo -e "  ${CYAN}Checking lifecycle scripts...${RESET}"
+LIFECYCLE_HITS=""
+LIFECYCLE_COUNT=0
+while IFS= read -r -d '' pkgjson; do
+  suspicious=$(python3 -c "
+import json, sys
+try:
+    d=json.load(open('$pkgjson' if '$pkgjson' else sys.argv[1]))
+    scripts=d.get('scripts',{})
+    dangerous=['postinstall','preinstall','prepare','prepack','postpack']
+    exec_patterns=['curl','wget','node -e','python -c','bash -c','sh -c','exec(','eval(']
+    for hook in dangerous:
+        cmd=scripts.get(hook,'')
+        if any(p in cmd for p in exec_patterns):
+            print('%s: %s: %s' % ('$pkgjson'.replace('$CLONE_DIR/',''), hook, cmd[:80]))
+except: pass
+" 2>/dev/null || true)
+  if [[ -n "$suspicious" ]]; then
+    LIFECYCLE_HITS="$LIFECYCLE_HITS$suspicious\n"
+    LIFECYCLE_COUNT=$((LIFECYCLE_COUNT + 1))
+  fi
+done < <(find "$CLONE_DIR" -name "package.json" -not -path "*/node_modules/*" -print0 2>/dev/null)
+# Also check setup.py / pyproject.toml for cmdclass or entry_points with suspicious commands
+while IFS= read -r -d '' setuppy; do
+  if grep -qE '(postinstall|cmdclass|entry_points)' "$setuppy" 2>/dev/null; then
+    if grep -qE '(curl|wget|exec|eval|subprocess)' "$setuppy" 2>/dev/null; then
+      LIFECYCLE_HITS="$LIFECYCLE_HITS${setuppy#$CLONE_DIR/}\n"
+      LIFECYCLE_COUNT=$((LIFECYCLE_COUNT + 1))
+    fi
+  fi
+done < <(find "$CLONE_DIR" -name "setup.py" -print0 2>/dev/null)
+if [[ "$LIFECYCLE_COUNT" -gt 0 ]]; then
+  RESULT_LIFECYCLE="FOUND ($LIFECYCLE_COUNT files)"
+  DETAIL_LIFECYCLE=$(printf '%b' "$LIFECYCLE_HITS" | sed '/^$/d' | head -3)
+else
+  RESULT_LIFECYCLE="CLEAN"
+  DETAIL_LIFECYCLE=""
+fi
+
+# ── 12. Typosquatting detection ───────────────────────────────────────────────
+echo -e "  ${CYAN}Checking for typosquatting...${RESET}"
+TYPO_HITS=$(python3 - "$CLONE_DIR" <<'PYEOF'
+import sys, json, os, re
+
+POPULAR_NPM = [
+    "react","lodash","express","axios","moment","chalk","commander","dotenv",
+    "webpack","babel","typescript","eslint","prettier","jest","mocha","request",
+    "async","underscore","uuid","debug","colors","yargs","minimist","semver",
+    "glob","mkdirp","rimraf","cross-env","nodemon","pm2","socket.io","mongoose",
+    "sequelize","passport","jsonwebtoken","bcrypt","cors","helmet","morgan",
+    "body-parser","multer","sharp","cheerio","puppeteer","playwright","selenium"
+]
+POPULAR_PY = [
+    "requests","numpy","pandas","flask","django","fastapi","sqlalchemy","celery",
+    "boto3","pytest","setuptools","pip","wheel","cryptography","paramiko","fabric",
+    "click","pydantic","httpx","aiohttp","beautifulsoup4","scrapy","pillow",
+    "matplotlib","scipy","sklearn","tensorflow","torch","transformers","openai"
+]
+
+def levenshtein(a, b):
+    if abs(len(a)-len(b)) > 2: return 99
+    dp = list(range(len(b)+1))
+    for i, ca in enumerate(a):
+        ndp = [i+1]
+        for j, cb in enumerate(b):
+            ndp.append(min(dp[j]+(ca!=cb), dp[j+1]+1, ndp[j]+1))
+        dp = ndp
+    return dp[-1]
+
+clone_dir = sys.argv[1]
+findings = []
+
+# npm
+for root, dirs, files in os.walk(clone_dir):
+    dirs[:] = [d for d in dirs if d != 'node_modules']
+    for fname in files:
+        if fname != 'package.json': continue
+        try:
+            d = json.load(open(os.path.join(root, fname)))
+            deps = {}
+            deps.update(d.get('dependencies', {}))
+            deps.update(d.get('devDependencies', {}))
+            for pkg in deps:
+                for pop in POPULAR_NPM:
+                    dist = levenshtein(pkg.lower(), pop.lower())
+                    if 0 < dist <= 1:
+                        rel = os.path.join(root, fname).replace(clone_dir+'/', '')
+                        findings.append('%s: npm "%s" ~ "%s"' % (rel, pkg, pop))
+                        break
+        except: pass
+
+# pip
+for root, dirs, files in os.walk(clone_dir):
+    for fname in files:
+        if fname not in ('requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'): continue
+        try:
+            content = open(os.path.join(root, fname)).read()
+            pkgs = re.findall(r'^\s*([A-Za-z0-9_\-]+)', content, re.MULTILINE)
+            for pkg in pkgs:
+                for pop in POPULAR_PY:
+                    dist = levenshtein(pkg.lower().replace('-','_'), pop.lower().replace('-','_'))
+                    if 0 < dist <= 1:
+                        rel = os.path.join(root, fname).replace(clone_dir+'/', '')
+                        findings.append('%s: pip "%s" ~ "%s"' % (rel, pkg, pop))
+                        break
+        except: pass
+
+for f in findings[:10]:
+    print(f)
+PYEOF
+)
+TYPO_COUNT=$(echo "$TYPO_HITS" | grep -c . 2>/dev/null || true)
+if [[ "$TYPO_COUNT" -gt 0 ]]; then
+  RESULT_TYPOSQUAT="FOUND ($TYPO_COUNT suspects)"
+  DETAIL_TYPOSQUAT=$(echo "$TYPO_HITS" | head -3)
+else
+  RESULT_TYPOSQUAT="CLEAN"
+  DETAIL_TYPOSQUAT=""
+fi
+
 # ── Report ────────────────────────────────────────────────────────────────────
 label_GITLEAKS="Secrets (gitleaks)"
 label_SEMGREP="Security audit (semgrep)"
@@ -286,8 +463,24 @@ label_RCE="Remote code execution"
 label_TRUFFLEHOG="Verified secrets (trufflehog)"
 label_DOMAINS="Suspicious exfil domains"
 label_BINSYSC="Network syscalls in binaries"
+label_ENVFILES="Committed .env files"
+label_LIFECYCLE="Lifecycle script abuse"
+label_TYPOSQUAT="Typosquatting"
 
-CHECKS="GITLEAKS SEMGREP DSECRETS YARA EXFIL SENS RCE TRUFFLEHOG DOMAINS BINSYSC"
+CHECKS="GITLEAKS SEMGREP DSECRETS YARA EXFIL SENS RCE TRUFFLEHOG DOMAINS BINSYSC ENVFILES LIFECYCLE TYPOSQUAT"
+
+# Risk weights per check (high=30, medium=20, low=10)
+weight_GITLEAKS=20; weight_SEMGREP=10; weight_DSECRETS=20; weight_YARA=20
+weight_EXFIL=20; weight_SENS=10; weight_RCE=30; weight_TRUFFLEHOG=30
+weight_DOMAINS=20; weight_BINSYSC=20; weight_ENVFILES=20
+weight_LIFECYCLE=30; weight_TYPOSQUAT=20
+
+RISK_SCORE=0
+MAX_SCORE=0
+for id in $CHECKS; do
+  eval "w=\$weight_${id}"
+  MAX_SCORE=$((MAX_SCORE + w))
+done
 
 echo ""
 WIDTH=70
@@ -297,10 +490,20 @@ printf "${BOLD}${CYAN}│${RESET}  %-36s  %-28s${BOLD}${CYAN}│${RESET}\n" "CHE
 echo -e "${BOLD}${CYAN}├${BORDER}┤${RESET}"
 
 FOUND_ANY=false
+HIGH_SEVERITY=false
 for id in $CHECKS; do
   eval "res=\$RESULT_${id}"
   eval "det=\$DETAIL_${id}"
   eval "lbl=\$label_${id}"
+  eval "w=\$weight_${id}"
+
+  # Accumulate risk score
+  if [[ "$res" != "CLEAN" && "$res" != SKIPPED* ]]; then
+    RISK_SCORE=$((RISK_SCORE + w))
+    FOUND_ANY=true
+    # High severity: RCE, lifecycle abuse, typosquatting, verified secrets
+    [[ "$id" == "RCE" || "$id" == "LIFECYCLE" || "$id" == "TRUFFLEHOG" || "$id" == "TYPOSQUAT" ]] && HIGH_SEVERITY=true
+  fi
 
   # Color for result
   if [[ "$res" == "CLEAN" ]]; then
@@ -309,30 +512,54 @@ for id in $CHECKS; do
     res_colored="${YELLOW}${res}${RESET}"
   else
     res_colored="${RED}${res}${RESET}"
-    FOUND_ANY=true
   fi
 
-  # Pad label to 36, print result (color doesn't affect layout since it's at end)
   printf "${BOLD}${CYAN}│${RESET}  %-36s  %b" "$lbl" "$res_colored"
-  # Fill remaining space to close border
   res_plain=$(echo "$res" | sed 's/\x1b\[[0-9;]*m//g')
-  pad=$((WIDTH - 36 - 2 - ${#res_plain} - 2))
+  pad=$((WIDTH - 36 - 2 - ${#res_plain} - 4))
   [[ $pad -lt 0 ]] && pad=0
   printf '%*s' "$pad" ""
   echo -e "${BOLD}${CYAN}│${RESET}"
 
   if [[ -n "$det" ]]; then
     while IFS= read -r line; do
-      # Truncate to fit
       line="${line:0:$((WIDTH - 6))}"
       printf "${BOLD}${CYAN}│${RESET}    ${YELLOW}↳${RESET} %-$((WIDTH - 6))s${BOLD}${CYAN}│${RESET}\n" "$line"
     done <<< "$det"
   fi
 done
 
+# Risk score row
+echo -e "${BOLD}${CYAN}├${BORDER}┤${RESET}"
+RISK_PCT=$(( (RISK_SCORE * 100) / MAX_SCORE ))
+if [[ $RISK_PCT -ge 60 ]]; then
+  RISK_COLOR="$RED"
+elif [[ $RISK_PCT -ge 30 ]]; then
+  RISK_COLOR="$YELLOW"
+else
+  RISK_COLOR="$GREEN"
+fi
+RISK_LABEL="Risk score"
+RISK_VAL="${RISK_COLOR}${RISK_PCT}/100${RESET}"
+printf "${BOLD}${CYAN}│${RESET}  %-36s  %b" "$RISK_LABEL" "$RISK_VAL"
+risk_plain="${RISK_PCT}/100"
+pad=$((WIDTH - 36 - 2 - ${#risk_plain} - 4))
+[[ $pad -lt 0 ]] && pad=0
+printf '%*s' "$pad" ""
+echo -e "${BOLD}${CYAN}│${RESET}"
+
 echo -e "${BOLD}${CYAN}└${BORDER}┘${RESET}"
 echo -e "  Scanned: ${BOLD}$REPO_URL${RESET}"
 echo ""
+
+# ── No-interactive exit ───────────────────────────────────────────────────────
+if [[ "$NO_INTERACTIVE" == true ]]; then
+  if [[ "$HIGH_SEVERITY" == true ]]; then
+    echo -e "  ${RED}High-severity findings detected. Exiting with code 1.${RESET}"
+    exit 1
+  fi
+  exit 0
+fi
 
 # ── Save report? ──────────────────────────────────────────────────────────────
 read -rp "  Save report as Markdown? [y/N]: " SAVE
@@ -343,6 +570,7 @@ if [[ "$SAVE" =~ ^[Yy]$ ]]; then
     echo ""
     echo "> Scanned: $REPO_URL  "
     echo "> Date: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "> Risk score: ${RISK_PCT}/100"
     echo ""
     echo "## Results"
     echo ""
