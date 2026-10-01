@@ -39,31 +39,40 @@ pipx install detect-secrets
 # Interactive
 ./repo-scanner.sh
 
-# Direct
+# Direct URL or local path
 ./repo-scanner.sh --repo https://github.com/user/repo
+./repo-scanner.sh https://github.com/user/repo
+./repo-scanner.sh --repo /path/to/local/project
+./repo-scanner.sh .
+
+# Auto-save report to out/
+./repo-scanner.sh --repo https://github.com/user/repo --save
 
 # CI/CD — exits with code 1 on high-severity findings, no prompts
-./repo-scanner.sh --repo https://github.com/user/repo --no-interactive
+./repo-scanner.sh --repo https://github.com/user/repo --no-interactive --save
 
 # Scan full git history (slower, finds secrets in old commits)
 ./repo-scanner.sh --repo https://github.com/user/repo --full-history
 ```
 
-After scanning, the cloned repo is automatically deleted. You will be prompted to save the report as a Markdown file in `out/`.
+After scanning a remote repository, the temporary clone is automatically deleted. Local folders are scanned in-place without modification or deletion. You can save the scan report as a Markdown file in `out/`.
 
 ## Output
 
 - Terminal: ASCII table with color-coded results (`GREEN` / `RED` / `YELLOW`)
 - Risk score: 0–100 weighted by finding severity
-- Report: `out/<repo-name>-security-report.md` (optional)
+- Report: `out/<repo-name>-security-report.md` (optional or via `--save`)
 
 ## Flags
 
 | Flag | Description |
 |---|---|
-| `--repo <url>` | Repository URL to scan |
+| `-r, --repo <url\|path>` | Repository URL or local directory to scan |
+| `--save` | Automatically save report to `out/` without interactive prompt |
 | `--no-interactive` | Skip all prompts; exit code 1 if high-severity findings |
 | `--full-history` | Clone full git history and run gitleaks on all commits |
+| `--check-updates` | Check Homebrew for outdated scanner dependencies |
+| `-h, --help` | Show usage and options |
 
 ## Risk Score
 

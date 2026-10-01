@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m unittest*)",
+      "Bash(npm test*)",
+      "Bash(pytest*)",
+      "Bash(cargo test*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git stash*)",
+      "Bash(git checkout*)",
+      "Bash(uvx *skillspector*)",
+      "Bash(skillspector*)"
+    ]
+  }
+}

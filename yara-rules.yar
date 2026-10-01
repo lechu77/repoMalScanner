@@ -2,16 +2,16 @@
 
 rule CredentialHarvesting {
   meta:
-    description = "Reads browser cookies, localStorage, or OS credential stores"
+    description = "Reads browser cookies, sensitive storage tokens, or OS credential stores"
   strings:
     $a = "document.cookie" nocase
     $b = "chrome.cookies" nocase
     $c = "SecItemCopyMatching" nocase
-    $d = "credentials.json" nocase
+    $d = ".credentials.json" nocase
     $e = ".git-credentials" nocase
-    $f = "netrc" nocase
-    $g = "localStorage.getItem" nocase
-    $h = "sessionStorage.getItem" nocase
+    $f = ".netrc" nocase
+    $g1 = /localStorage\.getItem\s*\(\s*["'][^"']*(token|auth|key|secret|password|jwt|credential)/ nocase
+    $g2 = /sessionStorage\.getItem\s*\(\s*["'][^"']*(token|auth|key|secret|password|jwt|credential)/ nocase
     $i = "keytar.getPassword" nocase
   condition:
     any of them
@@ -24,8 +24,8 @@ rule SensitiveFileAccess {
     $a = ".ssh/id_rsa" nocase
     $b = ".ssh/id_ed25519" nocase
     $c = ".aws/credentials" nocase
-    $d = "/etc/passwd"
-    $e = "/etc/shadow"
+    $d = /[^.]\/etc\/passwd/
+    $e = /[^.]\/etc\/shadow/
     $f = ".gnupg/secring" nocase
     $g = ".gnupg/private-keys" nocase
   condition:
@@ -53,11 +53,14 @@ rule RemoteCodeExecution {
   meta:
     description = "Downloads and executes remote code"
   strings:
-    $a = /curl.{0,50}\|\s*(ba)?sh/ nocase
-    $b = /wget.{0,50}\|\s*(ba)?sh/ nocase
-    $c = "eval(Buffer.from" nocase
-    $d = "eval(atob(" nocase
-    $e = "exec(base64" nocase
+    $exec_dl1 = /(exec|spawn|system|popen|subprocess|Command::new)[^;\n]{0,120}curl.{0,60}\|\s*(ba)?sh/ nocase
+    $exec_dl2 = /(exec|spawn|system|popen|subprocess|Command::new)[^;\n]{0,120}wget.{0,60}\|\s*(ba)?sh/ nocase
+    $sh_dl1 = /#!\/(usr\/)?bin\/(ba)?sh[^\x00]{0,1000}curl.{0,60}\|\s*(ba)?sh/ nocase
+    $sh_dl2 = /#!\/(usr\/)?bin\/(ba)?sh[^\x00]{0,1000}wget.{0,60}\|\s*(ba)?sh/ nocase
+    $eval1 = "eval(Buffer.from" nocase
+    $eval2 = "eval(atob(" nocase
+    $eval3 = "exec(base64" nocase
+    $eval4 = /eval\s*\(\s*fetch/ nocase
   condition:
     any of them
 }

@@ -2,3 +2,12 @@ tmp/
 out/
 CONTEXT.md
 MEMORY.md
+
+# Environment & Secrets (Added by agent-harness)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx

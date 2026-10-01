@@ -16,18 +16,13 @@ BREW_TOOLS="gitleaks semgrep yara trufflehog"
 PIPX_TOOLS="detect-secrets"
 
 check_deps() {
-  local missing_brew="" missing_pipx="" outdated_brew=""
+  local missing_brew="" missing_pipx=""
 
   for t in $BREW_TOOLS; do
     command -v "$t" &>/dev/null || missing_brew="$missing_brew $t"
   done
   for t in $PIPX_TOOLS; do
     command -v "$t" &>/dev/null || missing_pipx="$missing_pipx $t"
-  done
-  for t in $BREW_TOOLS; do
-    if command -v "$t" &>/dev/null; then
-      brew outdated --quiet 2>/dev/null | grep -q "^$t$" && outdated_brew="$outdated_brew $t"
-    fi
   done
 
   if [[ -n "$missing_brew" || -n "$missing_pipx" ]]; then
@@ -43,23 +38,99 @@ check_deps() {
     fi
   fi
 
-  if [[ -n "$outdated_brew" ]] && [[ "$NO_INTERACTIVE" != true ]]; then
-    echo -e "${YELLOW}Updates available:${RESET}${outdated_brew}"
-    read -rp "  Update now? [y/N]: " CONFIRM
-    [[ "$CONFIRM" =~ ^[Yy]$ ]] && brew upgrade $outdated_brew
+  if [[ "$CHECK_UPDATES" == true ]] && [[ "$NO_INTERACTIVE" != true ]]; then
+    local outdated_brew=""
+    for t in $BREW_TOOLS; do
+      if command -v "$t" &>/dev/null; then
+        brew outdated --quiet 2>/dev/null | grep -q "^$t$" && outdated_brew="$outdated_brew $t"
+      fi
+    done
+    if [[ -n "$outdated_brew" ]]; then
+      echo -e "${YELLOW}Updates available:${RESET}${outdated_brew}"
+      read -rp "  Update now? [y/N]: " CONFIRM
+      [[ "$CONFIRM" =~ ^[Yy]$ ]] && brew upgrade $outdated_brew
+    fi
   fi
+}
+
+show_help() {
+  cat <<'EOF'
+Usage:
+  ./repo-scanner.sh [OPTIONS] [REPO_URL_OR_PATH]
+
+Options:
+  -r, --repo <url|path>  Repository URL (https/git) or local directory path to scan
+  --no-interactive       Skip all prompts; exit code 1 if high-severity findings
+  --full-history         Clone full git history and run gitleaks on all commits
+  --save                 Automatically save report to out/ without prompting
+  --check-updates        Check Homebrew for updates to scanner tools
+  -h, --help             Show this help message
+
+Examples:
+  ./repo-scanner.sh --repo https://github.com/user/repo
+  ./repo-scanner.sh https://github.com/user/repo
+  ./repo-scanner.sh --repo .
+  ./repo-scanner.sh --repo /path/to/project
+  ./repo-scanner.sh --repo https://github.com/user/repo --no-interactive --save
+EOF
 }
 
 # ── Input ──────────────────────────────────────────────────────────────────────
 REPO_URL=""
 NO_INTERACTIVE=false
 FULL_HISTORY=false
+AUTO_SAVE=false
+CHECK_UPDATES=false
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --repo)           REPO_URL="$2"; shift 2 ;;
-    --no-interactive) NO_INTERACTIVE=true; shift ;;
-    --full-history)   FULL_HISTORY=true; shift ;;
-    *) shift ;;
+    --repo)
+      REPO_URL="$2"
+      shift 2
+      ;;
+    --repo=*)
+      REPO_URL="${1#*=}"
+      shift
+      ;;
+    -r)
+      REPO_URL="$2"
+      shift 2
+      ;;
+    -r=*)
+      REPO_URL="${1#*=}"
+      shift
+      ;;
+    --no-interactive)
+      NO_INTERACTIVE=true
+      shift
+      ;;
+    --full-history)
+      FULL_HISTORY=true
+      shift
+      ;;
+    --save)
+      AUTO_SAVE=true
+      shift
+      ;;
+    --check-updates)
+      CHECK_UPDATES=true
+      shift
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    -*)
+      echo -e "${RED}Unknown option: $1${RESET}" >&2
+      show_help >&2
+      exit 1
+      ;;
+    *)
+      if [[ -z "$REPO_URL" ]]; then
+        REPO_URL="$1"
+      fi
+      shift
+      ;;
   esac
 done
 
@@ -71,29 +142,36 @@ echo ""
 
 if [[ -z "$REPO_URL" ]]; then
   if [[ "$NO_INTERACTIVE" == true ]]; then
-    echo "No URL provided." && exit 1
+    echo "No URL or path provided." && exit 1
   fi
-  read -rp "  Repo URL: " REPO_URL
-else
-  echo -e "  Repo URL: ${BOLD}$REPO_URL${RESET}"
+  read -rp "  Repo URL or local path: " REPO_URL
 fi
-[[ -z "$REPO_URL" ]] && echo "No URL provided." && exit 1
+[[ -z "$REPO_URL" ]] && echo "No URL or path provided." && exit 1
 
-REPO_NAME=$(basename "$REPO_URL" .git)
-CLONE_DIR="$TMPDIR_SCAN/$REPO_NAME"
-
-echo -e "\n  ${CYAN}Cloning...${RESET}"
-if [[ "$FULL_HISTORY" == true ]]; then
-  git clone --quiet "$REPO_URL" "$CLONE_DIR" 2>&1 || { echo -e "${RED}Clone failed.${RESET}"; exit 1; }
+IS_LOCAL=false
+if [[ -d "$REPO_URL" ]]; then
+  IS_LOCAL=true
+  CLONE_DIR="$(cd "$REPO_URL" && pwd)"
+  REPO_NAME="$(basename "$CLONE_DIR")"
+  echo -e "  Target: ${BOLD}$CLONE_DIR${RESET} (local directory)"
 else
-  git clone --depth=1 --quiet "$REPO_URL" "$CLONE_DIR" 2>&1 || { echo -e "${RED}Clone failed.${RESET}"; exit 1; }
+  REPO_NAME=$(basename "$REPO_URL" .git)
+  CLONE_DIR="$TMPDIR_SCAN/$REPO_NAME"
+  echo -e "  Repo URL: ${BOLD}$REPO_URL${RESET}"
+  echo -e "\n  ${CYAN}Cloning...${RESET}"
+  if [[ "$FULL_HISTORY" == true ]]; then
+    git clone --quiet "$REPO_URL" "$CLONE_DIR" 2>&1 || { echo -e "${RED}Clone failed.${RESET}"; exit 1; }
+  else
+    git clone --depth=1 --quiet "$REPO_URL" "$CLONE_DIR" 2>&1 || { echo -e "${RED}Clone failed.${RESET}"; exit 1; }
+  fi
 fi
 
 # ── Check engine ──────────────────────────────────────────────────────────────
 GREP_INCLUDES=(-rIl
   --include="*.js" --include="*.ts" --include="*.py" --include="*.sh"
   --include="*.env" --include="*.json" --include="*.yml" --include="*.yaml"
-  --include="*.rb" --include="*.php" --include="*.go" --include="*.java"
+  --include="*.rb" --include="*.php" --include="*.go" --include="*.java" --include="*.rs"
+  --exclude="*.test.*" --exclude="*.spec.*"
   --exclude-dir="test" --exclude-dir="tests" --exclude-dir="__tests__"
   --exclude-dir="fixtures" --exclude-dir="testdata" --exclude-dir="spec")
 
@@ -216,6 +294,9 @@ if command -v yara &>/dev/null && [[ -f "$YARA_RULES" ]]; then
     | grep -v '\.gitignore$' | grep -v '\.gitattributes$' \
     | grep -v 'README' | grep -v '\.md$' \
     | grep -v '\.txt$' | grep -v '\.rst$' | grep -v '\.adoc$' \
+    | grep -v '/test/' | grep -v '/tests/' | grep -v '/__tests__/' \
+    | grep -v '/fixtures/' | grep -v '/testdata/' | grep -v '/spec/' \
+    | grep -v '\.test\.[a-zA-Z0-9]*$' | grep -v '\.spec\.[a-zA-Z0-9]*$' \
     | head -20 || true)
   YARA_COUNT=$(echo "$YARA_OUT" | grep -c . || true)
   if [[ "$YARA_COUNT" -gt 0 ]]; then
@@ -236,15 +317,13 @@ run_grep "EXFIL" '(fetch|axios|requests\.(get|post)|http\.(get|post)|curl)\s*\(?
 
 # ── 5. Grep — sensitive file/env access ──────────────────────────────────────
 echo -e "  ${CYAN}Checking sensitive access patterns...${RESET}"
-# Use -l to find files, but first verify they contain reads (not just writes)
-SENS_PATTERN='(~/\.ssh|~/\.aws|~/\.gnupg|/etc/passwd|/etc/shadow|process\.env\.|os\.environ|getenv\s*\(|localStorage\.(getItem|password|token)|document\.cookie|chrome\.cookies|\.netrc|\.git-credentials)'
+# Use -l to find files, checking for credential stores or high-value token reads
+SENS_PATTERN='(~/\.ssh|~/\.aws|~/\.gnupg|[^.]/etc/(passwd|shadow)|\.netrc|\.git-credentials|document\.cookie|chrome\.cookies|localStorage\.(password|token|getItem\s*\(\s*["'"'"'][^"'"'"']*(token|auth|key|secret|password|jwt|credential))|process\.env\.[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PRIVATE|AUTH|KEY|CREDENTIAL|APIKEY)|os\.environ(\.get)?\s*\[?\(?["'"'"'][A-Za-z0-9_]*(TOKEN|SECRET|PASSWORD|PRIVATE|AUTH|KEY|CREDENTIAL|APIKEY))'
 SENS_EXCLUDE='^[[:space:]]*(os\.environ\[|process\.env\.[A-Z_]+ *=)'
 SENS_HITS=""
 SENS_COUNT=0
 while IFS= read -r file; do
-  # File matches the broad pattern — check if it has any non-assignment match
   if grep -qEv "$SENS_EXCLUDE" "$file" 2>/dev/null && grep -qE "$SENS_PATTERN" "$file" 2>/dev/null; then
-    # Confirm at least one line matches pattern AND is not an assignment
     if grep -E "$SENS_PATTERN" "$file" 2>/dev/null | grep -qEv "$SENS_EXCLUDE"; then
       SENS_HITS="$SENS_HITS${file#$CLONE_DIR/}\n"
       SENS_COUNT=$((SENS_COUNT + 1))
@@ -261,32 +340,60 @@ fi
 
 # ── 6. Grep — remote code execution ──────────────────────────────────────────
 echo -e "  ${CYAN}Checking remote execution patterns...${RESET}"
-run_grep "RCE" '(curl.+\|\s*(ba)?sh|wget.+\|\s*(ba)?sh|eval\s*\(.*fetch|eval\s*\(.*http|exec\s*\(.*http)'
+RCE_HITS=""
+RCE_COUNT=0
+# In shell scripts, piped curl/wget to sh/bash is direct execution
+while IFS= read -r file; do
+  RCE_HITS="$RCE_HITS${file#$CLONE_DIR/}\n"
+  RCE_COUNT=$((RCE_COUNT + 1))
+done < <(grep -rIl --include="*.sh" -E '(curl.+\|\s*(ba)?sh|wget.+\|\s*(ba)?sh)' "$CLONE_DIR" 2>/dev/null | grep -vE '/(test|tests|__tests__|fixtures|spec)/' | head -10)
+
+# In code files, match process execution calls or dynamic eval/exec
+RCE_CODE_PATTERN='((exec|spawn|execSync|execFile|system|popen|subprocess)\s*\(.*(curl|wget).+\|\s*(ba)?sh|eval\s*\(.*(fetch|http|axios|Buffer|atob)|exec\s*\(.*(fetch|http|requests|base64|b64decode))'
+while IFS= read -r file; do
+  RCE_HITS="$RCE_HITS${file#$CLONE_DIR/}\n"
+  RCE_COUNT=$((RCE_COUNT + 1))
+done < <(grep -rIEl "${GREP_INCLUDES[@]:1}" "$RCE_CODE_PATTERN" "$CLONE_DIR" 2>/dev/null | head -10)
+
+if [[ "$RCE_COUNT" -gt 0 ]]; then
+  RESULT_RCE="FOUND ($RCE_COUNT files)"
+  DETAIL_RCE=$(printf '%b' "$RCE_HITS" | sed '/^$/d' | sort -u | head -3)
+else
+  RESULT_RCE="CLEAN"
+  DETAIL_RCE=""
+fi
 
 # ── 7. Trufflehog — verified secrets with entropy ────────────────────────────
 echo -e "  ${CYAN}Running trufflehog...${RESET}"
 if command -v trufflehog &>/dev/null; then
-  TH_OUT=$(trufflehog filesystem "$CLONE_DIR" --json --no-update 2>/dev/null | head -50 || true)
-  TH_COUNT=$(echo "$TH_OUT" | grep -c '"SourceMetadata"' 2>/dev/null || true)
-  if [[ "$TH_COUNT" -gt 0 ]]; then
-    RESULT_TRUFFLEHOG="FOUND ($TH_COUNT secrets)"
-    DETAIL_TRUFFLEHOG=$(echo "$TH_OUT" | python3 -c "
-import sys,json
-seen=set()
+  TH_OUT=$(trufflehog filesystem "$CLONE_DIR" --json --only-verified --no-update 2>/dev/null | head -50 || true)
+  TH_PARSED=$(echo "$TH_OUT" | python3 -c "
+import sys, json
+findings = []
 for line in sys.stdin:
-    line=line.strip()
+    line = line.strip()
     if not line: continue
     try:
-        d=json.loads(line)
-        f=d.get('SourceMetadata',{}).get('Data',{}).get('Filesystem',{}).get('file','?')
-        det=d.get('DetectorName','?')
-        entry='%s (%s)' % (f.replace('$CLONE_DIR/',''),det)
-        if entry not in seen:
-            seen.add(entry)
-            print(entry)
-        if len(seen)>=3: break
+        d = json.loads(line)
+        if d.get('Verified', False):
+            f = d.get('SourceMetadata',{}).get('Data',{}).get('Filesystem',{}).get('file','?')
+            det = d.get('DetectorName','?')
+            findings.append((f.replace('$CLONE_DIR/', ''), det))
     except: pass
+print(len(findings))
+seen = set()
+for f, det in findings:
+    entry = '%s (%s)' % (f, det)
+    if entry not in seen:
+        seen.add(entry)
+        print(entry)
+    if len(seen) >= 3: break
 " 2>/dev/null || true)
+  TH_COUNT=$(echo "$TH_PARSED" | head -1)
+  [[ -z "$TH_COUNT" ]] && TH_COUNT=0
+  if [[ "$TH_COUNT" -gt 0 ]]; then
+    RESULT_TRUFFLEHOG="FOUND ($TH_COUNT secrets)"
+    DETAIL_TRUFFLEHOG=$(echo "$TH_PARSED" | tail -n +2)
   else
     RESULT_TRUFFLEHOG="CLEAN"
     DETAIL_TRUFFLEHOG=""
@@ -552,18 +659,16 @@ echo -e "${BOLD}${CYAN}└${BORDER}┘${RESET}"
 echo -e "  Scanned: ${BOLD}$REPO_URL${RESET}"
 echo ""
 
-# ── No-interactive exit ───────────────────────────────────────────────────────
-if [[ "$NO_INTERACTIVE" == true ]]; then
-  if [[ "$HIGH_SEVERITY" == true ]]; then
-    echo -e "  ${RED}High-severity findings detected. Exiting with code 1.${RESET}"
-    exit 1
-  fi
-  exit 0
+# ── Save report? ──────────────────────────────────────────────────────────────
+SAVE_REPORT=false
+if [[ "$AUTO_SAVE" == true ]]; then
+  SAVE_REPORT=true
+elif [[ "$NO_INTERACTIVE" != true ]]; then
+  read -rp "  Save report as Markdown? [y/N]: " SAVE
+  [[ "$SAVE" =~ ^[Yy]$ ]] && SAVE_REPORT=true
 fi
 
-# ── Save report? ──────────────────────────────────────────────────────────────
-read -rp "  Save report as Markdown? [y/N]: " SAVE
-if [[ "$SAVE" =~ ^[Yy]$ ]]; then
+if [[ "$SAVE_REPORT" == true ]]; then
   REPORT_FILE="$OUT_DIR/${REPO_NAME}-security-report.md"
   {
     echo "# Security Scan Report: \`$REPO_NAME\`"
@@ -578,7 +683,10 @@ if [[ "$SAVE" =~ ^[Yy]$ ]]; then
     echo "|-------|--------|-------|"
     for id in $CHECKS; do
       eval "res=\$RESULT_${id}"; eval "det=\$DETAIL_${id}"; eval "lbl=\$label_${id}"
-      raw_detail=$(echo "$det" | tr '\n' ', ' | sed 's/, $//')
+      raw_detail=""
+      if [[ -n "$det" ]]; then
+        raw_detail=$(echo "$det" | tr '\n' ', ' | sed 's/, *$//')
+      fi
       echo "| $lbl | $res | $raw_detail |"
     done
     echo ""
@@ -598,6 +706,15 @@ if [[ "$SAVE" =~ ^[Yy]$ ]]; then
     fi
   } > "$REPORT_FILE"
   echo -e "  ${GREEN}Report saved → $REPORT_FILE${RESET}"
+fi
+
+# ── No-interactive exit ───────────────────────────────────────────────────────
+if [[ "$NO_INTERACTIVE" == true ]]; then
+  if [[ "$HIGH_SEVERITY" == true ]]; then
+    echo -e "  ${RED}High-severity findings detected. Exiting with code 1.${RESET}"
+    exit 1
+  fi
+  exit 0
 fi
 
 echo ""
