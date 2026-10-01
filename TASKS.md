@@ -21,4 +21,5 @@ Format:
 
 - [x] **skillspector_gate**: Integrate NVIDIA SkillSpector autonomous skill gate
 - [x] **cli_repo_arg_and_fp_reduction**: CLI --repo execution improvement and false positive reduction in scanner rules
+- [x] **stream_and_agent_protections**: Eliminate redundant checks (detect-secrets, raw HTTP grep) and add AI/MCP/agent attack vector checks
 - [ ] **init_setup**: Initial project structure and setup baseline

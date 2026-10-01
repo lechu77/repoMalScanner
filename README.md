@@ -10,28 +10,28 @@ With the rise of AI-assisted "vibe coding", malicious actors embed data-stealing
 
 | # | Check | Tool | Detects |
 |---|---|---|---|
-| 1 | Secrets | gitleaks | Tokens, API keys, credentials in code |
-| 2 | Security audit | semgrep | Supply chain patterns, secrets (`p/secrets`, `p/supply-chain`) |
-| 3 | Secrets in code | detect-secrets | Hardcoded secrets with high precision |
-| 4 | Malware patterns | yara | Credential harvesting, webhooks, RCE, obfuscation |
-| 5 | Data exfiltration | grep | Outbound HTTP calls to external endpoints |
-| 6 | Sensitive file/env access | grep | `~/.ssh`, `~/.aws`, `document.cookie`, env vars |
-| 7 | Remote code execution | grep | `curl \| bash`, `eval(fetch(...))` |
-| 8 | Verified secrets | trufflehog | High-entropy secrets with active verification |
-| 9 | Suspicious exfil domains | grep | webhook.site, Telegram, ngrok, Pastebin, etc. |
-| 10 | Network syscalls in binaries | strings | `.so`, `.dylib`, `.exe` with network calls |
-| 11 | Committed .env files | find | `.env`, `.env.production`, `.env.local`, etc. |
-| 12 | Lifecycle script abuse | python3 | `postinstall`/`preinstall` with remote execution |
-| 13 | Typosquatting | python3 | npm/pip deps with Levenshtein distance ≤1 to popular packages |
+| 1 | Secrets in code | gitleaks | Tokens, API keys, credentials in code & git history |
+| 2 | Verified active secrets | trufflehog | High-entropy secrets validated live against providers (`--only-verified`) |
+| 3 | Supply chain audit | semgrep | Supply chain patterns and vulnerable package practices (`p/supply-chain`) |
+| 4 | Malware patterns | yara | Behavioral heuristics, credential theft, reverse shells, obfuscation |
+| 5 | Sensitive files & AI credentials | grep | `~/.claude`, `~/.cursor`, `~/.ssh`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, cookies |
+| 6 | Remote code execution | grep | Shell scripts or execution-bound calls (`exec`, `spawn`) with `curl \| bash` |
+| 7 | Suspicious exfil endpoints | grep | webhook.site, Telegram bots, Discord webhooks, ngrok, Pastebin, etc. |
+| 8 | Network syscalls in binaries | strings | `.so`, `.dylib`, `.exe` compiled with network socket syscalls |
+| 9 | Committed .env files | find | `.env`, `.env.production`, `.env.local`, etc. |
+| 10 | Lifecycle script abuse | python3 | `postinstall`/`preinstall` with remote execution |
+| 11 | Dependency typosquatting | python3 | npm/pip deps with Levenshtein distance ≤1 to popular packages |
+| 12 | Insecure MCP & agent tools | python3 | Rogue commands, direct shells, or unpinned `npx -y` in MCP server configs |
+| 13 | Python .pth & unsafe serialization | python3 | `.pth` auto-exec startup hooks and dangerous pickle deserialization opcodes |
 
 ## Requirements
 
 ```bash
 brew install gitleaks semgrep yara trufflehog
-pipx install detect-secrets
 ```
 
-> Dependencies are checked and installed automatically on each run.
+> Dependencies are checked and offered for installation automatically on each run.
+> Redundant tools like `detect-secrets` and noisy generic HTTP greps have been eliminated.
 
 ## Usage
 
@@ -80,9 +80,9 @@ Each check has a weight. The final score is the sum of triggered weights normali
 
 | Weight | Checks |
 |---|---|
-| 30 (high) | Remote code execution, lifecycle script abuse, verified secrets, typosquatting |
-| 20 (medium) | Secrets (gitleaks), detect-secrets, YARA, data exfiltration, suspicious domains, binaries, .env files |
-| 10 (low) | Semgrep, sensitive file access |
+| 30 (high) | Remote code execution, lifecycle script abuse, verified secrets, insecure MCP & agent tools, Python .pth & unsafe serialization |
+| 20 (medium) | Secrets in code (gitleaks), YARA malware patterns, suspicious exfil endpoints, network syscalls in binaries, committed .env files, dependency typosquatting |
+| 10 (low) | Semgrep supply chain patterns, sensitive files & AI credentials |
 
 ## Project Structure
 

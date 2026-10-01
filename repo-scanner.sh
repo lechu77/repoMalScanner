@@ -13,27 +13,22 @@ trap 'rm -rf "$TMPDIR_SCAN"' EXIT
 
 # ── Dependencies ───────────────────────────────────────────────────────────────
 BREW_TOOLS="gitleaks semgrep yara trufflehog"
-PIPX_TOOLS="detect-secrets"
 
 check_deps() {
-  local missing_brew="" missing_pipx=""
+  local missing_brew=""
 
   for t in $BREW_TOOLS; do
     command -v "$t" &>/dev/null || missing_brew="$missing_brew $t"
   done
-  for t in $PIPX_TOOLS; do
-    command -v "$t" &>/dev/null || missing_pipx="$missing_pipx $t"
-  done
 
-  if [[ -n "$missing_brew" || -n "$missing_pipx" ]]; then
-    echo -e "${YELLOW}Missing dependencies:${RESET}${missing_brew}${missing_pipx}"
+  if [[ -n "$missing_brew" ]]; then
+    echo -e "${YELLOW}Missing dependencies:${RESET}${missing_brew}"
     if [[ "$NO_INTERACTIVE" == true ]]; then
       echo -e "${YELLOW}  (skipping install in --no-interactive mode)${RESET}"
     else
       read -rp "  Install now? [y/N]: " CONFIRM
       if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
         for t in $missing_brew;  do brew install "$t";  done
-        for t in $missing_pipx; do pipx install "$t"; done
       fi
     fi
   fi
@@ -224,11 +219,11 @@ else
   DETAIL_GITLEAKS=""
 fi
 
-# ── 2. Semgrep — exfiltration & malicious patterns ───────────────────────────
-echo -e "  ${CYAN}Running semgrep...${RESET}"
+# ── 2. Semgrep — supply chain malicious patterns ────────────────────────────
+echo -e "  ${CYAN}Running semgrep (supply chain)...${RESET}"
 SEMGREP_OUT="$TMPDIR_SCAN/semgrep.json"
 if command -v semgrep &>/dev/null; then
-  semgrep --config "p/secrets" --config "p/supply-chain" \
+  semgrep --config "p/supply-chain" \
     --json --output "$SEMGREP_OUT" "$CLONE_DIR" \
     --quiet --no-error 2>/dev/null || true
   SG_COUNT=$(python3 -c "import json,sys; d=json.load(open('$SEMGREP_OUT')); print(len(d.get('results',[])))" 2>/dev/null || echo 0)
@@ -255,38 +250,7 @@ else
   DETAIL_SEMGREP=""
 fi
 
-# ── 3. detect-secrets — secrets in code ──────────────────────────────────────
-echo -e "  ${CYAN}Running detect-secrets...${RESET}"
-DS_OUT="$TMPDIR_SCAN/detect-secrets.json"
-if command -v detect-secrets &>/dev/null; then
-  detect-secrets scan "$CLONE_DIR" > "$DS_OUT" 2>/dev/null || true
-  DS_COUNT=$(python3 -c "
-import json
-d=json.load(open('$DS_OUT'))
-print(sum(len(v) for v in d.get('results',{}).values()))
-" 2>/dev/null || echo 0)
-  if [[ "$DS_COUNT" -gt 0 ]]; then
-    RESULT_DSECRETS="FOUND ($DS_COUNT secrets)"
-    DETAIL_DSECRETS=$(python3 -c "
-import json
-d=json.load(open('$DS_OUT'))
-count=0
-for f,findings in d.get('results',{}).items():
-    if count>=3: break
-    types=','.join(set(x.get('type','?') for x in findings))
-    print('%s (%s)' % (f.replace('$CLONE_DIR/',''), types))
-    count+=1
-" 2>/dev/null || true)
-  else
-    RESULT_DSECRETS="CLEAN"
-    DETAIL_DSECRETS=""
-  fi
-else
-  RESULT_DSECRETS="SKIPPED (not found)"
-  DETAIL_DSECRETS=""
-fi
-
-# ── 4. YARA — malware patterns ───────────────────────────────────────────────
+# ── 3. YARA — malware patterns ───────────────────────────────────────────────
 echo -e "  ${CYAN}Running YARA...${RESET}"
 YARA_RULES="$SCRIPT_DIR/yara-rules.yar"
 if command -v yara &>/dev/null && [[ -f "$YARA_RULES" ]]; then
@@ -311,14 +275,10 @@ else
   DETAIL_YARA=""
 fi
 
-# ── 5. Grep — data exfiltration (outbound HTTP calls) ────────────────────────
-echo -e "  ${CYAN}Checking exfiltration patterns...${RESET}"
-run_grep "EXFIL" '(fetch|axios|requests\.(get|post)|http\.(get|post)|curl)\s*\(?\s*["'"'"']https?://'
-
-# ── 5. Grep — sensitive file/env access ──────────────────────────────────────
-echo -e "  ${CYAN}Checking sensitive access patterns...${RESET}"
-# Use -l to find files, checking for credential stores or high-value token reads
-SENS_PATTERN='(~/\.ssh|~/\.aws|~/\.gnupg|[^.]/etc/(passwd|shadow)|\.netrc|\.git-credentials|document\.cookie|chrome\.cookies|localStorage\.(password|token|getItem\s*\(\s*["'"'"'][^"'"'"']*(token|auth|key|secret|password|jwt|credential))|process\.env\.[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PRIVATE|AUTH|KEY|CREDENTIAL|APIKEY)|os\.environ(\.get)?\s*\[?\(?["'"'"'][A-Za-z0-9_]*(TOKEN|SECRET|PASSWORD|PRIVATE|AUTH|KEY|CREDENTIAL|APIKEY))'
+# ── 4. Grep — sensitive files & AI credentials ──────────────────────────────
+echo -e "  ${CYAN}Checking sensitive files & AI credentials...${RESET}"
+# Check for local auth stores and high-value developer/AI credentials
+SENS_PATTERN='(~/\.ssh|~/\.aws|~/\.gnupg|~/\.claude|~/\.cursor|~/\.codex|~/\.config/gh|[^.]/etc/(passwd|shadow)|\.netrc|\.git-credentials|document\.cookie|chrome\.cookies|localStorage\.(password|token|getItem\s*\(\s*["'"'"'][^"'"'"']*(token|auth|key|secret|password|jwt|credential))|process\.env\.[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PRIVATE|AUTH|KEY|CREDENTIAL|APIKEY|OPENAI|ANTHROPIC|GEMINI|CLAUDE|HF_)|os\.environ(\.get)?\s*\[?\(?["'"'"'][A-Za-z0-9_]*(TOKEN|SECRET|PASSWORD|PRIVATE|AUTH|KEY|CREDENTIAL|APIKEY|OPENAI|ANTHROPIC|GEMINI|CLAUDE|HF_))'
 SENS_EXCLUDE='^[[:space:]]*(os\.environ\[|process\.env\.[A-Z_]+ *=)'
 SENS_HITS=""
 SENS_COUNT=0
@@ -559,28 +519,134 @@ else
   DETAIL_TYPOSQUAT=""
 fi
 
+# ── 12. MCP & agent tool configurations ──────────────────────────────────────
+echo -e "  ${CYAN}Checking MCP & agent configurations...${RESET}"
+MCP_HITS=$(python3 - "$CLONE_DIR" <<'PYEOF'
+import sys, json, os
+
+clone_dir = sys.argv[1]
+findings = []
+
+for root, dirs, files in os.walk(clone_dir):
+    dirs[:] = [d for d in dirs if d != 'node_modules']
+    for fname in files:
+        if not (fname.endswith('mcp.json') or fname in ('claude_desktop_config.json', 'settings.json')):
+            continue
+        fpath = os.path.join(root, fname)
+        rel = fpath.replace(clone_dir + '/', '')
+        try:
+            d = json.load(open(fpath, 'r', errors='ignore'))
+            servers = d.get('mcpServers', {})
+            if not isinstance(servers, dict) and 'mcp' in d and isinstance(d['mcp'], dict):
+                servers = d['mcp'].get('mcpServers', {})
+            if not isinstance(servers, dict): continue
+
+            for name, srv in servers.items():
+                if not isinstance(srv, dict): continue
+                cmd = str(srv.get('command', '')).strip()
+                args_list = srv.get('args', [])
+                args_str = ' '.join(str(a) for a in args_list) if isinstance(args_list, list) else str(args_list)
+                full = f"{cmd} {args_str}".strip()
+                reasons = []
+                if any(sh == cmd or cmd.endswith('/' + sh) for sh in ['bash', 'sh', 'zsh', 'cmd.exe', 'powershell', 'pwsh']):
+                    reasons.append('shell wrapper')
+                if 'npx -y' in full or 'npx --yes' in full or 'uvx ' in full:
+                    reasons.append('unpinned remote package execution')
+                if any(p in full for p in ['curl', 'wget', 'ngrok', 'nc ', 'eval(', 'exec(']):
+                    reasons.append('remote download/tunneling pattern')
+                if reasons:
+                    findings.append(f"{rel}: {name} ({', '.join(reasons)})")
+        except: pass
+
+for f in findings[:10]:
+    print(f)
+PYEOF
+)
+MCP_COUNT=$(echo "$MCP_HITS" | grep -c . 2>/dev/null || true)
+if [[ "$MCP_COUNT" -gt 0 ]]; then
+  RESULT_MCPCONFIG="FOUND ($MCP_COUNT tools)"
+  DETAIL_MCPCONFIG=$(echo "$MCP_HITS" | head -3)
+else
+  RESULT_MCPCONFIG="CLEAN"
+  DETAIL_MCPCONFIG=""
+fi
+
+# ── 13. Python .pth & unsafe serialization ───────────────────────────────────
+echo -e "  ${CYAN}Checking Python .pth & serialization payloads...${RESET}"
+PTH_HITS=$(python3 - "$CLONE_DIR" <<'PYEOF'
+import sys, os
+
+clone_dir = sys.argv[1]
+findings = []
+
+DANGEROUS_MODS = [b"posix", b"nt", b"subprocess", b"builtins", b"os"]
+DANGEROUS_FUNCS = [b"system", b"Popen", b"call", b"check_output", b"eval", b"exec"]
+
+for root, dirs, files in os.walk(clone_dir):
+    dirs[:] = [d for d in dirs if d != 'node_modules']
+    for fname in files:
+        fpath = os.path.join(root, fname)
+        rel = fpath.replace(clone_dir + '/', '')
+
+        # Check .pth startup hooks
+        if fname.endswith('.pth'):
+            try:
+                for line in open(fpath, 'r', errors='ignore'):
+                    line_s = line.strip()
+                    if line_s.startswith('import ') or line_s.startswith('import\t') or 'exec(' in line_s or 'eval(' in line_s:
+                        findings.append(f"{rel}: executable startup hook ({line_s[:50]})")
+                        break
+            except: pass
+
+        # Check serialization payloads (.pkl, .pickle, .pt, .joblib)
+        elif any(fname.endswith(ext) for ext in ('.pkl', '.pickle', '.pt', '.joblib')):
+            try:
+                raw = open(fpath, 'rb').read(1024 * 1024)
+                for mod in DANGEROUS_MODS:
+                    if mod in raw:
+                        idx = raw.find(mod)
+                        chunk = raw[idx:idx+60]
+                        for func in DANGEROUS_FUNCS:
+                            if func in chunk:
+                                findings.append(f"{rel}: dangerous opcode ({mod.decode()}.{func.decode()})")
+                                break
+            except: pass
+
+for f in findings[:10]:
+    print(f)
+PYEOF
+)
+PTH_COUNT=$(echo "$PTH_HITS" | grep -c . 2>/dev/null || true)
+if [[ "$PTH_COUNT" -gt 0 ]]; then
+  RESULT_PTHSERIAL="FOUND ($PTH_COUNT payloads)"
+  DETAIL_PTHSERIAL=$(echo "$PTH_HITS" | head -3)
+else
+  RESULT_PTHSERIAL="CLEAN"
+  DETAIL_PTHSERIAL=""
+fi
+
 # ── Report ────────────────────────────────────────────────────────────────────
-label_GITLEAKS="Secrets (gitleaks)"
-label_SEMGREP="Security audit (semgrep)"
-label_DSECRETS="Secrets in code (detect-secrets)"
+label_GITLEAKS="Secrets in code (gitleaks)"
+label_TRUFFLEHOG="Verified active secrets (trufflehog)"
+label_SEMGREP="Supply chain patterns (semgrep)"
 label_YARA="Malware patterns (yara)"
-label_EXFIL="Data exfiltration"
-label_SENS="Sensitive file/env access"
+label_SENS="Sensitive files & AI credentials"
 label_RCE="Remote code execution"
-label_TRUFFLEHOG="Verified secrets (trufflehog)"
-label_DOMAINS="Suspicious exfil domains"
+label_DOMAINS="Suspicious exfil endpoints"
 label_BINSYSC="Network syscalls in binaries"
 label_ENVFILES="Committed .env files"
 label_LIFECYCLE="Lifecycle script abuse"
-label_TYPOSQUAT="Typosquatting"
+label_TYPOSQUAT="Dependency typosquatting"
+label_MCPCONFIG="Insecure MCP & agent tools"
+label_PTHSERIAL="Python .pth & unsafe serialization"
 
-CHECKS="GITLEAKS SEMGREP DSECRETS YARA EXFIL SENS RCE TRUFFLEHOG DOMAINS BINSYSC ENVFILES LIFECYCLE TYPOSQUAT"
+CHECKS="GITLEAKS TRUFFLEHOG SEMGREP YARA SENS RCE DOMAINS BINSYSC ENVFILES LIFECYCLE TYPOSQUAT MCPCONFIG PTHSERIAL"
 
 # Risk weights per check (high=30, medium=20, low=10)
-weight_GITLEAKS=20; weight_SEMGREP=10; weight_DSECRETS=20; weight_YARA=20
-weight_EXFIL=20; weight_SENS=10; weight_RCE=30; weight_TRUFFLEHOG=30
-weight_DOMAINS=20; weight_BINSYSC=20; weight_ENVFILES=20
-weight_LIFECYCLE=30; weight_TYPOSQUAT=20
+weight_GITLEAKS=20; weight_TRUFFLEHOG=30; weight_SEMGREP=10; weight_YARA=20
+weight_SENS=10; weight_RCE=30; weight_DOMAINS=20; weight_BINSYSC=20
+weight_ENVFILES=20; weight_LIFECYCLE=30; weight_TYPOSQUAT=20
+weight_MCPCONFIG=30; weight_PTHSERIAL=30
 
 RISK_SCORE=0
 MAX_SCORE=0
@@ -608,8 +674,8 @@ for id in $CHECKS; do
   if [[ "$res" != "CLEAN" && "$res" != SKIPPED* ]]; then
     RISK_SCORE=$((RISK_SCORE + w))
     FOUND_ANY=true
-    # High severity: RCE, lifecycle abuse, typosquatting, verified secrets
-    [[ "$id" == "RCE" || "$id" == "LIFECYCLE" || "$id" == "TRUFFLEHOG" || "$id" == "TYPOSQUAT" ]] && HIGH_SEVERITY=true
+    # High severity: RCE, lifecycle abuse, verified secrets, MCP risk, .pth execution
+    [[ "$id" == "RCE" || "$id" == "LIFECYCLE" || "$id" == "TRUFFLEHOG" || "$id" == "MCPCONFIG" || "$id" == "PTHSERIAL" ]] && HIGH_SEVERITY=true
   fi
 
   # Color for result
