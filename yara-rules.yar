@@ -2,29 +2,35 @@
 
 rule CredentialHarvesting {
   meta:
-    description = "Reads browser cookies, sensitive storage tokens, or OS credential stores"
+    description = "Reads browser credential stores, OS keychains, or developer credential files"
   strings:
-    $a = "document.cookie" nocase
-    $b = "chrome.cookies" nocase
-    $c = "SecItemCopyMatching" nocase
-    $d = ".credentials.json" nocase
-    $e = ".git-credentials" nocase
-    $f = ".netrc" nocase
-    $g1 = /localStorage\.getItem\s*\(\s*["'][^"']*(token|auth|key|secret|password|jwt|credential)/ nocase
-    $g2 = /sessionStorage\.getItem\s*\(\s*["'][^"']*(token|auth|key|secret|password|jwt|credential)/ nocase
-    $i = "keytar.getPassword" nocase
+    $a = "chrome.cookies" nocase
+    $b = ".git-credentials" nocase
+    $c = ".claude/.credentials.json" nocase
+    $d = "Chrome Safe Storage" nocase
+    $e = "dump-keychain" nocase
+    $f = "keytar.findCredentials" nocase
+    $g = "key4.db" nocase
+    $h = /["'\/\\]logins\.json/ nocase
+    $chrome_login = /["'\/\\]Login Data["']/
+    $chrome_state = /["'\/\\]Local State["']/
+    $chrome_key = "encrypted_key"
+    $cookie_exfil1 = /(fetch|XMLHttpRequest|sendBeacon|Image\(\)\.src)[^\n]{0,200}document\.cookie/
+    $cookie_exfil2 = /document\.cookie[^\n]{0,200}(fetch\s*\(|XMLHttpRequest|sendBeacon|Image\(\)\.src)/
+    $netrc = /["'\/~]\.netrc\b/
+    $keytar_get = "keytar.getPassword"
   condition:
-    any of them
+    any of ($a,$b,$c,$d,$e,$f,$g,$h,$chrome_login,$cookie_exfil1,$cookie_exfil2,$netrc,$keytar_get) or ($chrome_state and $chrome_key)
 }
 
 rule SensitiveFileAccess {
   meta:
-    description = "Accesses SSH keys, AWS credentials, or system password files"
+    description = "Accesses SSH private keys, AWS credentials, or system password hashes"
   strings:
-    $a = ".ssh/id_rsa" nocase
-    $b = ".ssh/id_ed25519" nocase
+    // Private keys only (id_*.pub public keys are not secrets), and only when
+    // read from the home dir: test data / config strings naming the path are not
+    $a = /(open|readFile(Sync)?|read_text|read_bytes|createReadStream|expanduser|homedir\(\)|Path\.home\(\)|\$HOME|~|cat\s)[^\n]{0,80}\.ssh\/id_(rsa|ed25519|ecdsa|dsa)([^.a-zA-Z0-9_]|$)/
     $c = ".aws/credentials" nocase
-    $d = /[^.]\/etc\/passwd/
     $e = /[^.]\/etc\/shadow/
     $f = ".gnupg/secring" nocase
     $g = ".gnupg/private-keys" nocase
@@ -38,7 +44,7 @@ rule DataExfiltration {
   strings:
     $a = "webhook.site" nocase
     $b = "discord.com/api/webhooks" nocase
-    $c = "t.me/" nocase
+    $c = /(^|[^a-zA-Z0-9.\-])t\.me\//
     $d = "api.telegram.org" nocase
     $e = "pastebin.com" nocase
     $f = "requestbin" nocase
@@ -55,8 +61,18 @@ rule RemoteCodeExecution {
   strings:
     $exec_dl1 = /(exec|spawn|system|popen|subprocess|Command::new)[^;\n]{0,120}curl.{0,60}\|\s*(ba)?sh/ nocase
     $exec_dl2 = /(exec|spawn|system|popen|subprocess|Command::new)[^;\n]{0,120}wget.{0,60}\|\s*(ba)?sh/ nocase
-    $sh_dl1 = /#!\/(usr\/)?bin\/(ba)?sh[^\x00]{0,1000}curl.{0,60}\|\s*(ba)?sh/ nocase
-    $sh_dl2 = /#!\/(usr\/)?bin\/(ba)?sh[^\x00]{0,1000}wget.{0,60}\|\s*(ba)?sh/ nocase
+    // Shell scripts: the download must start a command (line start, ; or &&), not a comment or echo hint
+    $sh_dl1 = /#!\/(usr\/)?bin\/(env[ \t]+)?(ba)?sh[^\x00]{0,1000}(\n|;|&&)[ \t]*(sudo[ \t]+)?curl[^\n]{0,60}\|[ \t]*(sudo[ \t]+)?(ba)?sh/ nocase
+    $sh_dl2 = /#!\/(usr\/)?bin\/(env[ \t]+)?(ba)?sh[^\x00]{0,1000}(\n|;|&&)[ \t]*(sudo[ \t]+)?wget[^\n]{0,60}\|[ \t]*(sudo[ \t]+)?(ba)?sh/ nocase
+  condition:
+    any of them
+}
+
+rule RuntimeObfuscation {
+  meta:
+    description = "Decodes and executes an obfuscated payload in a single expression"
+  strings:
+    $chain = /(^|[^a-zA-Z0-9_.])(eval|exec|Function)\s*\([^\n]{0,80}(b64decode|b32decode|b85decode|a85decode|fromhex|atob|fromCharCode|Buffer\.from|zlib\.decompress|marshal\.loads|codecs\.decode)/
     $eval1 = "eval(Buffer.from" nocase
     $eval2 = "eval(atob(" nocase
     $eval3 = "exec(base64" nocase
@@ -65,38 +81,20 @@ rule RemoteCodeExecution {
     any of them
 }
 
-rule RuntimeObfuscation {
+rule RuntimeObfuscationSplit {
   meta:
-    description = "Decodes and executes obfuscated payloads at runtime — requires 2+ indicators"
+    description = "Decodes a payload and passes it to exec/eval within 400 bytes (lower confidence)"
   strings:
-    $a = "fromCharCode" nocase
-    $b = /Buffer\.from\([^)]+,\s*['"]base64['"]\)/ nocase
-    $c = "base64.b64decode" nocase
-    $d = /\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}/
-    $exec1 = "eval(" nocase
-    $exec2 = "exec(" nocase
-    $exec3 = "Function(" nocase
-    $exec4 = "subprocess" nocase
+    $split = /(b64decode|b32decode|b85decode|a85decode|fromhex|atob|fromCharCode|zlib\.decompress|marshal\.loads)\s*\([\s\S]{0,400}[^a-zA-Z0-9_.](exec|eval|Function)\s*\(/
   condition:
-    // Must have at least one obfuscation indicator AND one execution indicator
-    (any of ($a,$b,$c,$d)) and (any of ($exec1,$exec2,$exec3,$exec4))
+    $split
 }
 
 rule SupplyChainHook {
   meta:
-    description = "Suspicious npm lifecycle scripts that also contain remote execution"
+    description = "npm lifecycle script whose command performs remote or inline code execution"
   strings:
-    $hook1 = "\"postinstall\"" nocase
-    $hook2 = "\"preinstall\"" nocase
-    $hook3 = "\"prepare\"" nocase
-    $exec1 = /curl.{0,100}https?:\/\// nocase
-    $exec2 = /wget.{0,100}https?:\/\// nocase
-    $exec3 = "node -e" nocase
-    $exec4 = "python -c" nocase
-    $exec5 = "bash -c" nocase
-    $exec6 = "sh -c" nocase
-    $exec7 = "exec(" nocase
-    $exec8 = "eval(" nocase
+    $hook = /"(preinstall|install|postinstall|prepare)"\s*:\s*"[^"]{0,300}(curl|wget|node -e|python -c|bash -c|sh -c|eval\(|exec\()/
   condition:
-    any of ($hook1,$hook2,$hook3) and any of ($exec1,$exec2,$exec3,$exec4,$exec5,$exec6,$exec7,$exec8)
+    $hook
 }

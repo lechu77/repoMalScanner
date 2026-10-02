@@ -14,15 +14,15 @@ With the rise of AI-assisted "vibe coding", malicious actors embed data-stealing
 | 2 | Verified active secrets | trufflehog | High-entropy secrets validated live against providers (`--only-verified`) |
 | 3 | Supply chain audit | semgrep | Supply chain patterns and vulnerable package practices (`p/supply-chain`) |
 | 4 | Malware patterns | yara | Behavioral heuristics, credential theft, reverse shells, obfuscation |
-| 5 | Sensitive files & AI credentials | grep | `~/.claude`, `~/.cursor`, `~/.ssh`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, cookies |
-| 6 | Remote code execution | grep | Shell scripts or execution-bound calls (`exec`, `spawn`) with `curl \| bash` |
+| 5 | Sensitive files & AI credentials | grep + python3 | SSH private keys and `~/.ssh` enumeration, `~/.aws/credentials`, `~/.netrc`/`~/.npmrc`/`~/.pypirc`/`~/.docker/config.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`, `state.vscdb`, env dumps sent to a network sink, `authorized_keys` writes with a hardcoded or downloaded key |
+| 6 | Remote code execution | grep | `curl \| (sudo) sh`, `\| python`, `bash <(curl)`, `sh -c "$(curl)"` in shell scripts; decoded/downloaded payload passed straight to `exec`/`eval` |
 | 7 | Suspicious exfil endpoints | grep | webhook.site, Telegram bots, Discord webhooks, ngrok, Pastebin, etc. |
 | 8 | Network syscalls in binaries | strings | `.so`, `.dylib`, `.exe` compiled with network socket syscalls |
 | 9 | Committed .env files | find | `.env`, `.env.production`, `.env.local`, etc. |
-| 10 | Lifecycle script abuse | python3 | `postinstall`/`preinstall` with remote execution |
+| 10 | Lifecycle script abuse | python3 | Inline remote execution in npm hooks, malicious files run by hooks (`node scripts/x.min.js`), setup.py network/exec or install-hook subprocesses |
 | 11 | Dependency typosquatting | python3 | npm/pip deps with Levenshtein distance ≤1 to popular packages |
-| 12 | Insecure MCP & agent tools | python3 | Rogue commands, direct shells, or unpinned `npx -y` in MCP server configs |
-| 13 | Python .pth & unsafe serialization | python3 | `.pth` auto-exec startup hooks and dangerous pickle deserialization opcodes |
+| 12 | Insecure MCP & agent tools | python3 | Rogue commands, direct shells, or `npx`/`uvx` packages without a version pin in MCP server configs |
+| 13 | Python .pth & unsafe serialization | python3 | `.pth` auto-exec startup hooks; pickle imports outside a per-name allowlist (`torch.*`, numpy reconstruct/dtype/ndarray, `collections.OrderedDict`, safe builtins, the repo's own classes, ...). Stdlib gadgets and stdlib modules shadowed by repo files are high severity; unknown third-party classes are "suspicious" (weight 10, not high severity), found by a static opcode walk with memo/stack tracking over every concatenated stream and zip member (including `*.pth` checkpoints). It never unpickles. Unparseable `.pkl` files and analysis-budget overruns are reported (fail closed) |
 
 ## Requirements
 
@@ -82,7 +82,14 @@ Each check has a weight. The final score is the sum of triggered weights normali
 |---|---|
 | 30 (high) | Remote code execution, lifecycle script abuse, verified secrets, insecure MCP & agent tools, Python .pth & unsafe serialization |
 | 20 (medium) | Secrets in code (gitleaks), YARA malware patterns, suspicious exfil endpoints, network syscalls in binaries, committed .env files, dependency typosquatting |
-| 10 (low) | Semgrep supply chain patterns, sensitive files & AI credentials |
+| 10 (low) | Semgrep supply chain patterns, sensitive files & AI credentials; YARA when the only hit is the decode-then-exec proximity rule (low confidence) |
+
+`WARN` (for example, unparseable manifests that may hide entry points) and `SKIPPED` results are shown in yellow and are not scored.
+
+### Precision trade-offs
+- Generic heuristics skip tests, docs/data files and minified bundles. High-precision YARA rules (credential theft, sensitive files, decode-and-exec, lifecycle hooks) still run on tests and minified bundles; they skip only docs/data files. Entry points are always scanned with no filter: package.json `main`/`bin`, lifecycle-script targets (one level of `npm run X`), pyproject scripts, `setup.py`, `conftest.py`, and one level of local `require()`/`import` from JS entry points. Deeper transitive imports into noise paths are only covered by the high-precision rules.
+- Decode-then-exec is detected within a single expression or within 400 bytes. Splits further apart are missed.
+- Repo-derived strings are stripped of control characters and Markdown-escaped before they reach the terminal or the saved report.
 
 ## Project Structure
 

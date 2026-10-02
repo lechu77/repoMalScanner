@@ -11,3 +11,5 @@ MEMORY.md
 *.key
 *.p12
 *.pfx
+*.db
+*.sqlite*

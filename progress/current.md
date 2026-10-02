@@ -1,15 +1,14 @@
 # Active Session
 
 ## Task
-- **Slug:** None active
-- **Agent:** None
+- **Slug:** (none — next: autoexec_on_open)
 
 ## Plan
-Tell your AI what you want to build. The Leader will break it down into TASKS.md.
+_Pending._
 
 ## Log
 | Time | Action | Result |
 |------|--------|--------|
 
 ## Next Step
-Awaiting user request.
+Start `autoexec_on_open` from `TASKS.md`.
