@@ -1,7 +1,9 @@
 tmp/
 out/
-CONTEXT.md
-MEMORY.md
+/CONTEXT.md
+/MEMORY.md
+__pycache__/
+*.swp
 
 # Environment & Secrets (Added by agent-harness)
 .env

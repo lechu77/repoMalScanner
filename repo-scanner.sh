@@ -167,7 +167,10 @@ fi
 
 # ── Check engine ──────────────────────────────────────────────────────────────
 # Untrusted-input rules: repo-derived strings are never passed to eval or
-# interpolated into code; symlinks, FIFOs and devices are never read.
+# interpolated into code; symlinks, FIFOs and devices are never read. Every
+# python3 runs isolated (-I: no cwd/script dir on sys.path, no PYTHON* env, no
+# user site), so a json.py/re.py committed in a target scanned in place (cwd =
+# target) is never imported; -B writes no bytecode.
 GREP_EXCLUDES=(
   -D skip
   --exclude="*.test.*" --exclude="*.spec.*"
@@ -191,7 +194,8 @@ TEST_PATH_RE='(/(test|tests|__tests__|fixtures|testdata|spec)/|\.test\.[A-Za-z0-
 # Minified bundles: generic heuristics are noise there; high-precision rules still run.
 MINIFIED_RE='[.-](min|bundle|umd)\.js$'
 # JSON that configures execution (package/MCP/agent/editor/devcontainer).
-MANIFEST_JSON_RE='/(package\.json|[^/]*mcp[^/]*\.json|settings\.json|claude_desktop_config\.json|\.vscode/tasks\.json|\.devcontainer/devcontainer\.json|\.devcontainer\.json)$'
+# *.code-workspace and .envrc are not *.json, so they are never data paths.
+MANIFEST_JSON_RE='/(package\.json|[^/]*mcp[^/]*\.json|settings(\.local)?\.json|claude_desktop_config\.json|\.vscode/tasks\.json|\.devcontainer/([^/]+/)?devcontainer\.json|\.devcontainer\.json|\.cursor/hooks\.json)$'
 # pytest auto-imports conftest.py, so it is never treated as test noise.
 AUTOEXEC_RE='/conftest\.py$'
 
@@ -289,7 +293,7 @@ run_grep() {
 # install or use, so they are scanned with no noise filter. Each source fails
 # open: one malformed manifest never skips the others.
 ENTRY_RAW_FILE="$TMPDIR_SCAN/entrypoints.bin"
-python3 - "$CLONE_DIR" > "$ENTRY_RAW_FILE" 2>/dev/null <<'PYEOF' || true
+python3 -I -B - "$CLONE_DIR" > "$ENTRY_RAW_FILE" 2>/dev/null <<'PYEOF' || true
 import json, os, re, shlex, sys
 
 clone_dir = os.path.realpath(sys.argv[1])
@@ -447,18 +451,25 @@ done < "$ENTRY_RAW_FILE"
 # ── 1. Gitleaks — secrets & credential theft ──────────────────────────────────
 echo -e "  ${CYAN}Running gitleaks...${RESET}"
 GITLEAKS_OUT="$TMPDIR_SCAN/gitleaks.json"
+GITLEAKS_NOTE=""
+if [[ "$FULL_HISTORY" == true && "$IS_LOCAL" == true ]]; then
+  # git log on a local target honours its .git/config (core.fsmonitor, diff
+  # drivers, textconv filters): never run git against a repo we did not clone
+  GITLEAKS_NOTE="history not scanned: git would run the local target's .git/config commands"
+  echo -e "  ${YELLOW}WARN: --full-history ignored for local directories (${GITLEAKS_NOTE}); scanning files only${RESET}"
+fi
 if command -v gitleaks &>/dev/null; then
-  if [[ "$FULL_HISTORY" == true ]]; then
+  if [[ "$FULL_HISTORY" == true && "$IS_LOCAL" != true ]]; then
     gitleaks detect --source "$CLONE_DIR" --report-format json \
       --report-path "$GITLEAKS_OUT" --exit-code 0 -q 2>/dev/null || true
   else
     gitleaks detect --source "$CLONE_DIR" --report-format json \
       --report-path "$GITLEAKS_OUT" --no-git --exit-code 0 -q 2>/dev/null || true
   fi
-  GL_COUNT=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$GITLEAKS_OUT" 2>/dev/null || echo 0)
+  GL_COUNT=$(python3 -I -B -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$GITLEAKS_OUT" 2>/dev/null || echo 0)
   if [[ "$GL_COUNT" -gt 0 ]]; then
     RESULT_GITLEAKS="FOUND ($GL_COUNT secrets)"
-    DETAIL_GITLEAKS=$(python3 - "$GITLEAKS_OUT" "$CLONE_DIR/" 2>/dev/null <<'PYEOF' || true
+    DETAIL_GITLEAKS=$(python3 -I -B - "$GITLEAKS_OUT" "$CLONE_DIR/" 2>/dev/null <<'PYEOF' || true
 import json, sys
 seen = set()
 for item in json.load(open(sys.argv[1]))[:3]:
@@ -470,7 +481,7 @@ PYEOF
 )
   else
     RESULT_GITLEAKS="CLEAN"
-    DETAIL_GITLEAKS=""
+    DETAIL_GITLEAKS="$GITLEAKS_NOTE"
   fi
 else
   RESULT_GITLEAKS="SKIPPED (not found)"
@@ -482,12 +493,12 @@ echo -e "  ${CYAN}Running semgrep (supply chain)...${RESET}"
 SEMGREP_OUT="$TMPDIR_SCAN/semgrep.json"
 if command -v semgrep &>/dev/null; then
   semgrep --config "p/supply-chain" \
-    --json --output "$SEMGREP_OUT" "$CLONE_DIR" \
+    --json --output "$SEMGREP_OUT" "$CLONE_DIR" --no-git-ignore \
     --quiet --no-error 2>/dev/null || true
-  SG_COUNT=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("results", [])))' "$SEMGREP_OUT" 2>/dev/null || echo 0)
+  SG_COUNT=$(python3 -I -B -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("results", [])))' "$SEMGREP_OUT" 2>/dev/null || echo 0)
   if [[ "$SG_COUNT" -gt 0 ]]; then
     RESULT_SEMGREP="FOUND ($SG_COUNT matches)"
-    DETAIL_SEMGREP=$(python3 - "$SEMGREP_OUT" "$CLONE_DIR/" 2>/dev/null <<'PYEOF' || true
+    DETAIL_SEMGREP=$(python3 -I -B - "$SEMGREP_OUT" "$CLONE_DIR/" 2>/dev/null <<'PYEOF' || true
 import json, sys
 seen = set()
 for res in json.load(open(sys.argv[1])).get("results", [])[:3]:
@@ -569,7 +580,7 @@ while IFS= read -r file; do
 done < <({ grep -rIEl "${GREP_INCLUDES[@]:1}" "$SENS_PATTERN" "$CLONE_DIR" 2>/dev/null | filter_noise | head -20 || true; grep_entry_points "$SENS_PATTERN"; } | sort -u)
 # Proximity checks (multi-line, capped reads): authorized_keys written next to
 # a hardcoded key or a network fetch, ~/.ssh enumeration, env dump near a sink.
-SENS_PROX=$( { grep -rIEl "${GREP_INCLUDES[@]:1}" "$SENS_PROX_PATTERN" "$CLONE_DIR" 2>/dev/null | filter_noise | head -50 || true; grep_entry_points "$SENS_PROX_PATTERN"; } | sort -u | python3 -c '
+SENS_PROX=$( { grep -rIEl "${GREP_INCLUDES[@]:1}" "$SENS_PROX_PATTERN" "$CLONE_DIR" 2>/dev/null | filter_noise | head -50 || true; grep_entry_points "$SENS_PROX_PATTERN"; } | sort -u | python3 -I -B -c '
 import os, re, sys
 
 MAX_READ = 2 * 1024 * 1024
@@ -662,7 +673,7 @@ fi
 echo -e "  ${CYAN}Running trufflehog...${RESET}"
 if command -v trufflehog &>/dev/null; then
   TH_OUT=$(trufflehog filesystem "$CLONE_DIR" --json --only-verified --no-update 2>/dev/null | head -50 || true)
-  TH_PARSED=$(printf '%s\n' "$TH_OUT" | python3 -c '
+  TH_PARSED=$(printf '%s\n' "$TH_OUT" | python3 -I -B -c '
 import json, sys
 prefix = sys.argv[1]
 findings = []
@@ -748,7 +759,7 @@ add_lifecycle_hit() {
 }
 while IFS= read -r -d '' pkgjson; do
   is_data_path "$pkgjson" && continue
-  suspicious=$(python3 - "$pkgjson" "$(rel_path "$pkgjson")" 2>/dev/null <<'PYEOF2'
+  suspicious=$(python3 -I -B - "$pkgjson" "$(rel_path "$pkgjson")" 2>/dev/null <<'PYEOF2'
 import json, sys
 MAX_READ = 1024 * 1024
 try:
@@ -797,7 +808,7 @@ done
 # sys.executable for builds) are normal.
 while IFS= read -r -d '' setuppy; do
   is_data_path "$setuppy" && continue
-  reason=$(python3 - "$setuppy" 2>/dev/null <<'PYEOF3'
+  reason=$(python3 -I -B - "$setuppy" 2>/dev/null <<'PYEOF3'
 import ast, re, sys
 
 MAX_READ = 1024 * 1024
@@ -891,7 +902,7 @@ fi
 
 # ── 12. Typosquatting detection ───────────────────────────────────────────────
 echo -e "  ${CYAN}Checking for typosquatting...${RESET}"
-TYPO_HITS=$(python3 - "$CLONE_DIR" 2>/dev/null <<'PYEOF'
+TYPO_HITS=$(python3 -I -B - "$CLONE_DIR" 2>/dev/null <<'PYEOF'
 import sys, json, os, re
 
 POPULAR_NPM = [
@@ -1033,11 +1044,18 @@ fi
 
 # ── 12. MCP & agent tool configurations ──────────────────────────────────────
 echo -e "  ${CYAN}Checking MCP & agent configurations...${RESET}"
-MCP_HITS=$(python3 - "$CLONE_DIR" 2>/dev/null <<'PYEOF'
+MCP_HITS=$(python3 -I -B - "$CLONE_DIR" "$SCRIPT_DIR/checks/autoexec" 2>/dev/null <<'PYEOF'
 import sys, json, os, re
 
 clone_dir = sys.argv[1]
 findings = []
+# VS Code mcp.json is JSONC (comments, trailing commas): reuse the autoexec parser
+sys.path.insert(0, sys.argv[2])
+try:
+    from core import strip_jsonc
+except ImportError:
+    def strip_jsonc(text):
+        return text
 
 RUNNERS = ('npx', 'uvx', 'bunx', 'pnpx')
 MAX_READ = 1024 * 1024
@@ -1075,11 +1093,14 @@ for root, dirs, files in os.walk(clone_dir):
             continue
         try:
             with open(fpath, 'r', errors='ignore') as fh:
-                d = json.loads(fh.read(MAX_READ))
+                d = json.loads(strip_jsonc(fh.read(MAX_READ)))
             if not isinstance(d, dict): continue
             servers = d.get('mcpServers', {})
             if not isinstance(servers, dict) and 'mcp' in d and isinstance(d['mcp'], dict):
                 servers = d['mcp'].get('mcpServers', {})
+            # VS Code .vscode/mcp.json uses a top-level "servers" object
+            if not (isinstance(servers, dict) and servers) and fname.endswith('mcp.json'):
+                servers = d.get('servers', {})
             if not isinstance(servers, dict): continue
 
             for name, srv in servers.items():
@@ -1119,7 +1140,7 @@ fi
 
 # ── 13. Python .pth & unsafe serialization ───────────────────────────────────
 echo -e "  ${CYAN}Checking Python .pth & serialization payloads...${RESET}"
-PTH_HITS=$(python3 - "$CLONE_DIR" 2>/dev/null <<'PYEOF'
+PTH_HITS=$(python3 -I -B - "$CLONE_DIR" 2>/dev/null <<'PYEOF'
 import io, os, pickletools, re, struct, sys, zipfile, zlib
 
 clone_dir = sys.argv[1]
@@ -1434,6 +1455,86 @@ else
   DETAIL_PTHSERIAL=""
 fi
 
+# ── 14. Auto-execution on open ───────────────────────────────────────────────
+# Code that runs just by opening/entering the repo: VS Code folderOpen tasks and
+# executable overrides, devcontainer commands (initializeCommand runs on the
+# host), direnv .envrc, git hooks (core.hooksPath), agent hooks/permissions.
+# Benign auto-run entries (folderOpen `npm run watch`, formatter hooks) are
+# INFO: shown, never scored. Unparseable configs give WARN (fail-open).
+# Analyzer: checks/autoexec/ (static parsing only, never executes repo code).
+# A wall-clock budget bounds crafted inputs; timeout/crash gives a scored WARN.
+echo -e "  ${CYAN}Checking auto-execution on open...${RESET}"
+AUTOEXEC_CHECK="$SCRIPT_DIR/checks/autoexec"
+AUTOEXEC_STDERR="$TMPDIR_SCAN/autoexec.err"
+AUTOEXEC_TIMEOUT="${REPO_SCANNER_AUTOEXEC_TIMEOUT:-120}"
+[[ "$AUTOEXEC_TIMEOUT" =~ ^[0-9]+$ && "$AUTOEXEC_TIMEOUT" -gt 0 ]] || AUTOEXEC_TIMEOUT=120
+# Internal budget below the hard timeout: priority configs first, partial HIGH kept
+AUTOEXEC_BUDGET=$(( AUTOEXEC_TIMEOUT > 30 ? AUTOEXEC_TIMEOUT - 30 : (AUTOEXEC_TIMEOUT + 1) / 2 ))
+# Symlinks recorded in the git index (mode 120000): with core.symlinks=false they
+# are checked out as plain files, so the analyzer needs the list to see them
+AUTOEXEC_LINKS="$TMPDIR_SCAN/autoexec-links.bin"
+: > "$AUTOEXEC_LINKS"
+# Only for our own URL clone: git on a local target would run its .git/config
+# (core.fsmonitor etc.); local symlinks are real and found by lstat instead
+if [[ "$IS_LOCAL" != true && -d "$CLONE_DIR/.git" ]]; then
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+  git -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.pager=cat \
+    -c diff.external= -c core.sshCommand= -c protocol.allow=never \
+    -C "$CLONE_DIR" ls-files -s -z 2>/dev/null | while IFS= read -r -d '' rec; do
+    [[ "$rec" == 120000\ * ]] && printf '%s\0' "${rec#*$'\t'}"
+  done > "$AUTOEXEC_LINKS" || true
+fi
+AUTOEXEC_CMD=(env AUTOEXEC_BUDGET_SECONDS="$AUTOEXEC_BUDGET" python3 -I -B "$AUTOEXEC_CHECK" "$CLONE_DIR" "$AUTOEXEC_LINKS")
+for t in timeout gtimeout; do
+  if command -v "$t" &>/dev/null; then AUTOEXEC_CMD=("$t" "$AUTOEXEC_TIMEOUT" "${AUTOEXEC_CMD[@]}"); break; fi
+done
+if [[ -f "$AUTOEXEC_CHECK/__main__.py" ]]; then
+  AUTOEXEC_RC=0
+  AUTOEXEC_RAW=$("${AUTOEXEC_CMD[@]}" 2>"$AUTOEXEC_STDERR") || AUTOEXEC_RC=$?
+  if [[ "$AUTOEXEC_RC" -eq 124 ]]; then
+    printf 'analyzer timed out after %ss\n' "$AUTOEXEC_TIMEOUT" >> "$AUTOEXEC_STDERR"
+  fi
+  [[ "$AUTOEXEC_RC" -eq 0 ]] || AUTOEXEC_ERR=true
+else
+  AUTOEXEC_RAW=""
+  AUTOEXEC_ERR=true
+  printf 'analyzer missing: checks/autoexec\n' > "$AUTOEXEC_STDERR"
+fi
+# H: confirmed high. P: raw-text prescan candidate (pass 1), high unless pass 2
+# retracted it with X after a full strict verdict of that file (survives kills)
+AUTOEXEC_HIGH=$(printf '%s\n' "$AUTOEXEC_RAW" | awk '
+  { tag = substr($0, 1, 2); body = substr($0, 3) }
+  tag == "X\t" { retracted[body] = 1 }
+  tag == "H\t" || tag == "P\t" { n++; kind[n] = tag; text[n] = body }
+  END { for (i = 1; i <= n; i++) {
+          if (kind[i] == "P\t" && (text[i] in retracted)) continue
+          if (!(text[i] in seen)) { seen[text[i]] = 1; print text[i] } } }')
+AUTOEXEC_INFO=$(printf '%s\n' "$AUTOEXEC_RAW" | sed -n $'s/^I\t//p')
+AUTOEXEC_UNPARSED=$(printf '%s\n' "$AUTOEXEC_RAW" | sed -n $'s/^E\t//p')
+AUTOEXEC_COUNT=$(printf '%s' "$AUTOEXEC_HIGH" | grep -c . || true)
+AUTOEXEC_INFO_COUNT=$(printf '%s' "$AUTOEXEC_INFO" | grep -c . || true)
+AUTOEXEC_ERR_COUNT=$(printf '%s' "$AUTOEXEC_UNPARSED" | grep -c . || true)
+if [[ "$AUTOEXEC_COUNT" -gt 0 ]]; then
+  RESULT_AUTOEXEC="FOUND ($AUTOEXEC_COUNT entries)"
+  DETAIL_AUTOEXEC=$(printf '%s\n%s\n' "$AUTOEXEC_HIGH" "$AUTOEXEC_INFO" | sed '/^$/d' | head -3)
+elif [[ "${AUTOEXEC_ERR:-false}" == true ]]; then
+  # Repo input may be crafted to crash/stall the analyzer: never silently
+  # CLEAN/SKIPPED; WARN for this check is scored at low weight (see below)
+  RESULT_AUTOEXEC="WARN (analyzer error)"
+  DETAIL_AUTOEXEC=$(grep -v '^autoexec ' "$AUTOEXEC_STDERR" 2>/dev/null | tail -2 || true)
+elif [[ "$AUTOEXEC_ERR_COUNT" -gt 0 ]]; then
+  # Unparseable config with no dangerous literal, symlinked config, or exhausted
+  # budget may hide an auto-run entry: never CLEAN
+  RESULT_AUTOEXEC="WARN ($AUTOEXEC_ERR_COUNT analysis warnings)"
+  DETAIL_AUTOEXEC=$(printf '%s\n%s\n' "$AUTOEXEC_UNPARSED" "$AUTOEXEC_INFO" | sed '/^$/d' | head -3)
+elif [[ "$AUTOEXEC_INFO_COUNT" -gt 0 ]]; then
+  RESULT_AUTOEXEC="INFO ($AUTOEXEC_INFO_COUNT auto-run entries)"
+  DETAIL_AUTOEXEC=$(printf '%s\n' "$AUTOEXEC_INFO" | head -3)
+else
+  RESULT_AUTOEXEC="CLEAN"
+  DETAIL_AUTOEXEC=""
+fi
+
 # ── Report ────────────────────────────────────────────────────────────────────
 # Repo-derived text (filenames, JSON strings, commands) may carry terminal
 # escapes or Markdown/HTML. Strip C0/C1 controls (keeping newlines) before any
@@ -1445,7 +1546,7 @@ md_escape() {
   LC_ALL=C sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
     -e 's/[]\\[()!|`*_~#{}]/\\&/g'
 }
-for id in GITLEAKS TRUFFLEHOG SEMGREP YARA SENS RCE DOMAINS BINSYSC ENVFILES LIFECYCLE TYPOSQUAT MCPCONFIG PTHSERIAL; do
+for id in GITLEAKS TRUFFLEHOG SEMGREP YARA SENS RCE DOMAINS BINSYSC ENVFILES LIFECYCLE TYPOSQUAT MCPCONFIG PTHSERIAL AUTOEXEC; do
   det_var="DETAIL_${id}"
   printf -v "$det_var" '%s' "$(printf '%s' "${!det_var}" | sanitize_text)"
 done
@@ -1463,16 +1564,20 @@ label_LIFECYCLE="Lifecycle script abuse"
 label_TYPOSQUAT="Dependency typosquatting"
 label_MCPCONFIG="Insecure MCP & agent tools"
 label_PTHSERIAL="Python .pth & unsafe serialization"
+label_AUTOEXEC="Auto-execution on open"
 
-CHECKS="GITLEAKS TRUFFLEHOG SEMGREP YARA SENS RCE DOMAINS BINSYSC ENVFILES LIFECYCLE TYPOSQUAT MCPCONFIG PTHSERIAL"
+CHECKS="GITLEAKS TRUFFLEHOG SEMGREP YARA SENS RCE DOMAINS BINSYSC ENVFILES LIFECYCLE TYPOSQUAT MCPCONFIG PTHSERIAL AUTOEXEC"
 
 # Risk weights per check (high=30, medium=20, low=10)
 weight_GITLEAKS=20; weight_TRUFFLEHOG=30; weight_SEMGREP=10; weight_YARA=20
 weight_SENS=10; weight_RCE=30; weight_DOMAINS=20; weight_BINSYSC=20
 weight_ENVFILES=20; weight_LIFECYCLE=30; weight_TYPOSQUAT=20
-weight_MCPCONFIG=30; weight_PTHSERIAL=30
+weight_MCPCONFIG=30; weight_PTHSERIAL=30; weight_AUTOEXEC=30
 # Decode-then-exec proximity alone is a weaker signal than a single expression
 weight_YARA_LOW=10
+# AUTOEXEC WARN (unparseable execution config, analyzer crash/timeout) can be
+# attacker-induced to hide a finding: scored low, never high severity
+weight_AUTOEXEC_WARN=10
 weight_PTHSERIAL_LOW=10
 
 RISK_SCORE=0
@@ -1499,18 +1604,23 @@ for id in $CHECKS; do
   [[ "$id" == "PTHSERIAL" && "$PTH_SUSPICIOUS_ONLY" == true ]] && { w=$weight_PTHSERIAL_LOW; low_pth=true; }
 
   # Accumulate risk score
-  # WARN (incomplete analysis) and SKIPPED are shown in yellow but not scored
-  if [[ "$res" != "CLEAN" && "$res" != SKIPPED* && "$res" != WARN* ]]; then
+  if [[ "$id" == "AUTOEXEC" && "$res" == WARN* ]]; then
+    RISK_SCORE=$((RISK_SCORE + weight_AUTOEXEC_WARN))
+  fi
+  # WARN (incomplete analysis), INFO (benign auto-run) and SKIPPED are shown
+  # in yellow but not scored (AUTOEXEC WARN excepted, above)
+  if [[ "$res" != "CLEAN" && "$res" != SKIPPED* && "$res" != WARN* && "$res" != INFO* ]]; then
     RISK_SCORE=$((RISK_SCORE + w))
     FOUND_ANY=true
-    # High severity: RCE, lifecycle abuse, verified secrets, MCP risk, .pth execution
-    [[ "$id" == "RCE" || "$id" == "LIFECYCLE" || "$id" == "TRUFFLEHOG" || "$id" == "MCPCONFIG" || ( "$id" == "PTHSERIAL" && "$low_pth" == false ) ]] && HIGH_SEVERITY=true
+    # High severity: RCE, lifecycle abuse, verified secrets, MCP risk, .pth
+    # execution, auto-execution on open
+    [[ "$id" == "RCE" || "$id" == "LIFECYCLE" || "$id" == "TRUFFLEHOG" || "$id" == "MCPCONFIG" || "$id" == "AUTOEXEC" || ( "$id" == "PTHSERIAL" && "$low_pth" == false ) ]] && HIGH_SEVERITY=true
   fi
 
   # Color for result
   if [[ "$res" == "CLEAN" ]]; then
     res_colored="${GREEN}${res}${RESET}"
-  elif [[ "$res" == SKIPPED* || "$res" == WARN* ]]; then
+  elif [[ "$res" == SKIPPED* || "$res" == WARN* || "$res" == INFO* ]]; then
     res_colored="${YELLOW}${res}${RESET}"
   else
     res_colored="${RED}${res}${RESET}"

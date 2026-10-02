@@ -26,7 +26,7 @@
    - Differentiates remote git repositories (shallow cloned into temporary directory) from local directories (scanned in-place).
    - Manages process-isolated sandbox directories (`tmp/scan-$$`) with POSIX `EXIT` traps for zero-residual cleanup.
 
-2. **Analysis Engine (13 specialized, non-overlapping checks)**:
+2. **Analysis Engine (14 specialized, non-overlapping checks)**:
    - **Secrets & Static Credentials**: `gitleaks` for code and git history.
    - **Live Verified Secrets**: `trufflehog` with `--only-verified` filter.
    - **Supply Chain Security**: `semgrep` configured strictly with `p/supply-chain`.
@@ -40,6 +40,7 @@
    - **Dependency Typosquatting**: Levenshtein distance ≤1 against popular npm and PyPI packages.
    - **Agent & MCP Configurations**: Deep inspection of `mcpServers` across `mcp.json`, `claude_desktop_config.json`, and `.cursor/mcp.json` for unpinned executions and shell wrappers.
    - **Python Startup & Serialization**: Detection of `.pth` executable hooks and unsafe deserialization opcodes in `.pkl`, `.pt`, `.joblib`.
+   - **Auto-execution on Open**: Static analysis (`checks/autoexec/`) of code that runs on open/enter/use: VS Code folderOpen tasks and executable/terminal overrides, devcontainer commands, `.envrc`, git hooks (`core.hooksPath`), agent hooks/permissions (Claude, Gemini, Cursor, Codex). Benign entries are `INFO` (unscored). A shipped `.git/config`/`.git/hooks` is parsed statically; no git command ever runs against a local target (gitleaks `--no-git`, semgrep `--no-git-ignore`, git-index symlink listing only for our own clone).
 
 3. **Risk Scoring Engine**:
    - Multi-tier weights: High (30 pts, triggers non-interactive exit 1), Medium (20 pts), Low (10 pts).
